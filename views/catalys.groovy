@@ -3,7 +3,7 @@ listView('Catalys Builds') {
     description('Catalys CI/CD')
 
     jobs {
-        name('catalys/installer')
+        name('Catalys/Installer')
     }
 
     columns {

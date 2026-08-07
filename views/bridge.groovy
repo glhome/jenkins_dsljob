@@ -3,7 +3,7 @@ listView('Bridge Builds') {
     description('Bridge CI/CD')
 
      jobs {
-        name('bridge/installer')
+        name('Bridge/Installer')
     }
 
     columns {
