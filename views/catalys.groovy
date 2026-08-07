@@ -1,9 +1,10 @@
 listView('Catalys Builds') {
 
-    description('Catalys CI/CD')
+    description('Catalys CI/CD jobs')
 
     jobs {
-        name('Catalys/Installer')
+        recurse()
+        regex('^Catalys/.*')
     }
 
     columns {
