@@ -2,8 +2,8 @@ listView('Bridge Builds') {
 
     description('Bridge CI/CD')
 
-    jobs {
-        regex('Bridge/.*')
+     jobs {
+        name('bridge/installer')
     }
 
     columns {
