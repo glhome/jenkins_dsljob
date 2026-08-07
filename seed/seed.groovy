@@ -1,9 +1,35 @@
-def scripts = [
-    'folders/**/*.groovy',
-    'views/**/*.groovy',
-    'jobs/**/*.groovy'
-]
+pipeline {
 
-scripts.each {
-    evaluate(new File("${WORKSPACE}/${it}"))
+    agent any
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git(
+                    branch: 'main',
+                    credentialsId: 'github-credentials',
+                    url: 'https://github.com/glhome/jenkins_dsljob.git'
+                )
+            }
+        }
+
+        stage('Generate Jenkins Configuration') {
+            steps {
+                jobDsl(
+                    targets: '''
+                        folders/**/*.groovy
+                        views/**/*.groovy
+                        jobs/**/*.groovy
+                    ''',
+
+                    lookupStrategy: 'SEED_JOB',
+
+                    removedJobAction: 'IGNORE',
+
+                    removedViewAction: 'IGNORE'
+                )
+            }
+        }
+    }
 }
