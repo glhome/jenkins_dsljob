@@ -18,7 +18,7 @@ pipelineJob('managed/gui') {
 
     definition {
         cps {
-            script(readFileFromWorkspace('pipelines/managed/bgui.groovy'))
+            script(readFileFromWorkspace('pipelines/managed/bridge/gui.groovy'))
             sandbox()
         }
     }
