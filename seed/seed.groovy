@@ -7,7 +7,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 git(
-                    branch: 'main',
+                    branch: 'managed_jobs',
                     credentialsId: 'github-credentials',
                     url: 'https://github.com/glhome/jenkins_dsljob.git'
                 )
