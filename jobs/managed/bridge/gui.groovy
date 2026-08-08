@@ -1,4 +1,3 @@
-```groovy
 pipelineJob('managed/gui') {
 
     description('Managed GUI sample pipeline')
@@ -29,4 +28,3 @@ pipelineJob('managed/gui') {
         daysToKeep(30)
     }
 }
-```
