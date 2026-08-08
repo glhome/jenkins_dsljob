@@ -9,3 +9,7 @@ folder('Catalys') {
 folder('Utilities') {
     description('Utility Jobs')
 }
+
+folder('Managed') {
+    description('Managed Build Pipelines')
+}

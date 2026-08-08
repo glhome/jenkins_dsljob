@@ -1,6 +1,6 @@
-pipelineJob('Bridge/Installer') {
+pipelineJob('Catalys/Installer') {
 
-    description('Bridge Installer Build')
+    description('Catalys Installer Build')
 
     logRotator {
         daysToKeep(30)
@@ -28,7 +28,7 @@ pipelineJob('Bridge/Installer') {
 
             script(
                 readFileFromWorkspace(
-                    'pipelines/bridge/installer.groovy'
+                    'pipelines/managed/catalys/installer.groovy'
                 )
             )
 
