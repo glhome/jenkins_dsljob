@@ -1,4 +1,4 @@
-pipelineJob('managed/bridge/gui') {
+pipelineJob('Managed/Gui') {
 
     description('Managed GUI sample pipeline')
 
