@@ -5,7 +5,3 @@ folder('Bridge') {
 folder('Catalys') {
     description('Catalys Build Pipelines')
 }
-
-folder('Utilities') {
-    description('Utility Jobs')
-}
