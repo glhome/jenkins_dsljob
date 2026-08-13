@@ -1,0 +1,20 @@
+workspace: your-bitbucket-workspace
+
+repositories:
+  installer:
+    project: CATALYS
+    repository: installer
+    productionBranch: master
+    buildJob: managed/installer
+
+  gui:
+    project: CATALYS
+    repository: gui
+    productionBranch: master
+    buildJob: managed/gui
+
+  lv:
+    project: CATALYS
+    repository: lv
+    productionBranch: master
+    buildJob: managed/lv
