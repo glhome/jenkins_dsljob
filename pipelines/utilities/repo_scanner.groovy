@@ -20,23 +20,21 @@ pipeline {
     stages {
 
         stage('Validate') {
-
             steps {
+                powershell """
+                    \$repoRoot = '${params.REPOSITORY_ROOT}'
 
-                script {
-
-                    if (!params.REPOSITORY_ROOT?.trim()) {
-                        error(
-                            'REPOSITORY_ROOT must be specified.'
-                        )
+                    if ([string]::IsNullOrWhiteSpace(\$repoRoot)) {
+                        throw 'REPOSITORY_ROOT must be specified.'
                     }
 
-                    if (!fileExists(params.REPOSITORY_ROOT)) {
-                        error(
-                            "REPOSITORY_ROOT does not exist: ${params.REPOSITORY_ROOT}"
-                        )
+                    if (-not (Test-Path -LiteralPath \$repoRoot -PathType Container)) {
+                        throw "Repository root does not exist: \$repoRoot"
                     }
-                }
+
+                    Write-Host "Repository root exists:"
+                    Write-Host \$repoRoot
+                """
             }
         }
 
