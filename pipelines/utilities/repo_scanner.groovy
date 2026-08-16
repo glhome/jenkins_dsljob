@@ -6,12 +6,14 @@ pipeline {
 
         string(
             name: 'REPOSITORY_ROOT',
-            defaultValue: ''
+            defaultValue: '',
+            description: 'Directory containing repositories to scan'
         )
 
         string(
             name: 'OUTPUT_FILE',
-            defaultValue: 'repo-scan-results.json'
+            defaultValue: 'repo-scan-results.json',
+            description: 'Scanner output file'
         )
     }
 
@@ -21,15 +23,20 @@ pipeline {
 
             steps {
 
-                powershell '''
-                    if ([string]::IsNullOrWhiteSpace($env:REPOSITORY_ROOT)) {
-                        throw "REPOSITORY_ROOT must be specified."
+                script {
+
+                    if (!params.REPOSITORY_ROOT?.trim()) {
+                        error(
+                            'REPOSITORY_ROOT must be specified.'
+                        )
                     }
 
-                    if (-not (Test-Path -LiteralPath $env:REPOSITORY_ROOT)) {
-                        throw "Repository root does not exist: $env:REPOSITORY_ROOT"
+                    if (!fileExists(params.REPOSITORY_ROOT)) {
+                        error(
+                            "REPOSITORY_ROOT does not exist: ${params.REPOSITORY_ROOT}"
+                        )
                     }
-                '''
+                }
             }
         }
 
@@ -37,11 +44,15 @@ pipeline {
 
             steps {
 
-                powershell '''
-                    & "$env:WORKSPACE\\scripts\\scanner\\scan-repos.ps1" `
-                        -RepositoryRoot "$env:REPOSITORY_ROOT" `
-                        -OutputFile "$env:OUTPUT_FILE"
-                '''
+                powershell """
+                    & "\$env:WORKSPACE\\scripts\\scanner\\scan-repos.ps1" `
+                        -RepositoryRoot "${params.REPOSITORY_ROOT}" `
+                        -OutputFile "\$env:WORKSPACE\\${params.OUTPUT_FILE}"
+
+                    if (\$LASTEXITCODE -ne 0) {
+                        throw "Repository scanner failed with exit code \$LASTEXITCODE"
+                    }
+                """
             }
         }
 
@@ -50,7 +61,7 @@ pipeline {
             steps {
 
                 archiveArtifacts(
-                    artifacts: "${params.OUTPUT_FILE}",
+                    artifacts: params.OUTPUT_FILE,
                     fingerprint: true
                 )
             }
