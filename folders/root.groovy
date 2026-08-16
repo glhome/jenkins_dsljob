@@ -1,7 +1,15 @@
-folder('Bridge') {
-    description('Bridge Build Pipelines')
+folder('managed') {
+    description('Managed Jenkins DSL jobs and pipelines')
 }
 
-folder('Catalys') {
-    description('Catalys Build Pipelines')
+folder('managed/bridge') {
+    description('Managed Bridge Build Pipelines')
+}
+
+folder('managed/catalys') {
+    description('Managed Catalys Build Pipelines')
+}
+
+folder('managed/utilities') {
+    description('Managed Jenkins utility jobs')
 }

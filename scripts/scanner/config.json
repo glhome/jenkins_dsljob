@@ -1,0 +1,33 @@
+{
+  "sourceExtensions": {
+    "C++": [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".h"],
+    "C": [".c"],
+    "C#": [".cs"],
+    "Python": [".py"],
+    "PowerShell": [".ps1", ".psm1"],
+    "Java": [".java"],
+    "JavaScript": [".js", ".jsx"],
+    "TypeScript": [".ts", ".tsx"],
+    "Go": [".go"],
+    "Rust": [".rs"],
+    "Shell": [".sh", ".bash"]
+  },
+
+  "buildFiles": {
+    "CMake": ["CMakeLists.txt"],
+    "MSBuild": [".sln", ".vcxproj", ".csproj"],
+    "Make": ["Makefile", "makefile"],
+    "Conan": ["conanfile.py", "conanfile.txt"],
+    "NPM": ["package.json"],
+    "Maven": ["pom.xml"],
+    "Gradle": ["build.gradle", "build.gradle.kts"],
+    "Cargo": ["Cargo.toml"],
+    "Python": ["pyproject.toml", "setup.py", "requirements.txt"]
+  },
+
+  "ciFiles": {
+    "Jenkins": ["Jenkinsfile"],
+    "GitHub Actions": [".github/workflows"],
+    "Bitbucket Pipelines": ["bitbucket-pipelines.yml"]
+  }
+}

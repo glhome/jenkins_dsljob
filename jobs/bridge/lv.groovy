@@ -1,6 +1,6 @@
-pipelineJob('managed/bridge/gui') {
+pipelineJob('managed/bridge/lv') {
 
-    description('Managed Bridge GUI Build')
+    description('Managed Bridge LV Build')
 
     logRotator {
         daysToKeep(30)
@@ -27,7 +27,7 @@ pipelineJob('managed/bridge/gui') {
         cps {
             script(
                 readFileFromWorkspace(
-                    'pipelines/bridge/gui.groovy'
+                    'pipelines/bridge/lv.groovy'
                 )
             )
 

@@ -1,10 +1,10 @@
-listView('Managed Catalys Builds') {
+listView('Managed Utilities') {
 
-    description('Managed Catalys CI/CD jobs')
+    description('Managed Jenkins utility jobs')
 
     jobs {
         recurse()
-        regex('^managed/catalys/.*')
+        regex('^managed/utilities/.*')
     }
 
     columns {

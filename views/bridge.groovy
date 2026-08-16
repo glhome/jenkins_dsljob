@@ -1,10 +1,10 @@
-listView('Bridge Builds') {
+listView('Managed Bridge Builds') {
 
-    description('Bridge CI/CD jobs')
+    description('Managed Bridge CI/CD jobs')
 
     jobs {
         recurse()
-        regex('^Bridge/.*')
+        regex('^managed/bridge/.*')
     }
 
     columns {
