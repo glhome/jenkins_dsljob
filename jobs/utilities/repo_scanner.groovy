@@ -1,4 +1,4 @@
-pipelineJob('managed/utilities/repo-scanner') {
+pipelineJob('managed/utilities/repo_scanner') {
 
     description(
         'Scan repositories and identify languages, build systems and CI configuration'
@@ -30,7 +30,7 @@ pipelineJob('managed/utilities/repo-scanner') {
 
             script(
                 readFileFromWorkspace(
-                    'pipelines/utilities/repo-scanner.groovy'
+                    'pipelines/utilities/repo_scanner.groovy'
                 )
             )
 
