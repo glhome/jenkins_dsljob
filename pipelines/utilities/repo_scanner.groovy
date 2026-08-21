@@ -5,9 +5,15 @@ pipeline {
     parameters {
 
         string(
-            name: 'REPOSITORY_ROOT',
+            name: 'GIT_URL',
             defaultValue: '',
-            description: 'Directory containing repositories to scan'
+            description: 'Git repository URL'
+        )
+
+        string(
+            name: 'BRANCH',
+            defaultValue: 'main',
+            description: 'Git branch to scan'
         )
 
         string(
@@ -20,36 +26,69 @@ pipeline {
     stages {
 
         stage('Validate') {
+
             steps {
+
+                script {
+
+                    if (!params.GIT_URL?.trim()) {
+                        error('GIT_URL must be specified.')
+                    }
+
+                    if (!params.BRANCH?.trim()) {
+                        error('BRANCH must be specified.')
+                    }
+
+                    echo "Repository: ${params.GIT_URL}"
+                    echo "Branch: ${params.BRANCH}"
+                }
+            }
+        }
+
+        stage('Checkout Repository') {
+
+            steps {
+
+                dir('repository') {
+
+                    git(
+                        url: params.GIT_URL,
+                        branch: params.BRANCH
+                    )
+                }
+            }
+        }
+
+        stage('Scan Repository') {
+
+            steps {
+
                 powershell """
-                    \$repoRoot = '${params.REPOSITORY_ROOT}'
 
-                    if ([string]::IsNullOrWhiteSpace(\$repoRoot)) {
-                        throw 'REPOSITORY_ROOT must be specified.'
+                    \$repoPath = "\$env:WORKSPACE\\repository"
+
+                    Write-Host "Scanning:"
+                    Write-Host \$repoPath
+
+                    & "\$env:WORKSPACE\\scripts\\scanner\\scan-repos.ps1" `
+                        -RepositoryRoot \$repoPath `
+                        -OutputFile "\$env:WORKSPACE\\${params.OUTPUT_FILE}"
+
+                    if (\$LASTEXITCODE -ne 0) {
+                        throw "Repository scanner failed."
                     }
-
-                    if (-not (Test-Path -LiteralPath \$repoRoot -PathType Container)) {
-                        throw "Repository root does not exist: \$repoRoot"
-                    }
-
-                    Write-Host "Repository root exists:"
-                    Write-Host \$repoRoot
                 """
             }
         }
 
-        stage('Scan Repositories') {
+        stage('Display Results') {
 
             steps {
 
                 powershell """
-                    & "\$env:WORKSPACE\\scripts\\scanner\\scan-repos.ps1" `
-                        -RepositoryRoot "${params.REPOSITORY_ROOT}" `
-                        -OutputFile "\$env:WORKSPACE\\${params.OUTPUT_FILE}"
 
-                    if (\$LASTEXITCODE -ne 0) {
-                        throw "Repository scanner failed with exit code \$LASTEXITCODE"
-                    }
+                    Get-Content `
+                        "\$env:WORKSPACE\\${params.OUTPUT_FILE}"
                 """
             }
         }
@@ -63,6 +102,14 @@ pipeline {
                     fingerprint: true
                 )
             }
+        }
+    }
+
+    post {
+
+        always {
+
+            deleteDir()
         }
     }
 }

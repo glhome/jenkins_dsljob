@@ -11,30 +11,22 @@ pipelineJob('managed/utilities/repo_scanner') {
 
     parameters {
 
-        stringParam(
-            'REPOSITORY_ROOT',
-            '',
-            'Directory containing repositories to scan'
-        )
+    stringParam(
+        'GIT_URL',
+        '',
+        'Git repository URL'
+    )
 
-        stringParam(
-            'OUTPUT_FILE',
-            'repo-scan-results.json',
-            'Scanner output file'
-        )
-    }
+    stringParam(
+        'BRANCH',
+        'main',
+        'Git branch to scan'
+    )
 
-    definition {
-
-        cps {
-
-            script(
-                readFileFromWorkspace(
-                    'pipelines/utilities/repo_scanner.groovy'
-                )
-            )
-
-            sandbox()
-        }
-    }
+    stringParam(
+        'OUTPUT_FILE',
+        'repo-scan-results.json',
+        'Scanner output file'
+    )
+}
 }
