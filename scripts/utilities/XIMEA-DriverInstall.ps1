@@ -31,3 +31,7 @@ if ($process.ExitCode -ne 0) {
 }
 
 Write-Host "XIMEA USB driver installation completed successfully."
+
+
+Get-ChildItem "C:\Users\ugliu\Downloads\XIMEA_Windows_SP_Stable.exe" -Recurse -Filter *.inf |
+    Select-Object FullName
