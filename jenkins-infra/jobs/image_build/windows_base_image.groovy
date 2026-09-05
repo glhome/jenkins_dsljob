@@ -1,5 +1,5 @@
 
-pipelineJob('managed/image_build/windows-base-image') {
+pipelineJob('managed/image_build/windows_base_image') {
 
     description('Weekly Windows IoT 1809 base image update pipeline')
 
@@ -26,7 +26,7 @@ pipelineJob('managed/image_build/windows-base-image') {
         cps {
             script(
                 readFileFromWorkspace(
-                    'jenkins-infra/pipelines/image_build/windows-base-image.groovy'
+                    'jenkins-infra/pipelines/image_build/windows_base_image.groovy'
                 )
             )
             sandbox()
