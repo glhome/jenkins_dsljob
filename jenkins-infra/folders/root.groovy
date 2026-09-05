@@ -13,3 +13,7 @@ folder('managed/catalys') {
 folder('managed/utilities') {
     description('Managed Jenkins utility jobs')
 }
+
+folder('managed/image_build') {
+    description('Managed Windows Build Pipelines')
+}

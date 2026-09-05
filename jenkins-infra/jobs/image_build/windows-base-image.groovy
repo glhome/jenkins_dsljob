@@ -1,8 +1,5 @@
-folder('windows') {
-    description('Windows Image Jobs')
-}
 
-pipelineJob('windows/windows-base-image') {
+pipelineJob('managed/image_build/windows-base-image') {
 
     description('Weekly Windows IoT 1809 base image update pipeline')
 
