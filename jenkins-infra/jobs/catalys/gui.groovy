@@ -1,4 +1,4 @@
-pipelineJob('Catalys/Gui') {
+pipelineJob('managed/catalys/gui') {
 
     description('Catalys GUI Build')
 

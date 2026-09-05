@@ -1,4 +1,4 @@
-pipelineJob('Catalys/Installer') {
+pipelineJob('managed/catalys/installer') {
 
     description('Catalys Installer Build')
 

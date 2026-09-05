@@ -1,4 +1,4 @@
-pipelineJob('Catalys/LV') {
+pipelineJob('managed/catalys/lv') {
 
     description('Catalys LV Build')
 
