@@ -34,7 +34,7 @@ pipelineJob('managed/bridge/installer') {
 
             script(
                 readFileFromWorkspace(
-                    'pipelines/bridge/installer.groovy'
+                    'jenkins-infra/pipelines/bridge/installer.groovy'
                 )
             )
 

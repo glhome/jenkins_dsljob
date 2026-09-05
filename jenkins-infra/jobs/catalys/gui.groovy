@@ -28,7 +28,7 @@ pipelineJob('Catalys/Gui') {
 
             script(
                 readFileFromWorkspace(
-                    'pipelines/catalys/gui.groovy'
+                    'jenkins-infra/pipelines/catalys/gui.groovy'
                 )
             )
 

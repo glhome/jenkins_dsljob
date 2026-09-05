@@ -28,7 +28,7 @@ pipelineJob('Catalys/Installer') {
 
             script(
                 readFileFromWorkspace(
-                    'pipelines/catalys/installer.groovy'
+                    'jenkins-infra/pipelines/catalys/installer.groovy'
                 )
             )
 

@@ -29,7 +29,7 @@ pipelineJob('windows/windows-base-image') {
         cps {
             script(
                 readFileFromWorkspace(
-                    'pipelines/image_build/windows-base-image.groovy'
+                    'jenkins-infra/pipelines/image_build/windows-base-image.groovy'
                 )
             )
             sandbox()
