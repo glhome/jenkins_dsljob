@@ -1,0 +1,45 @@
+jenkins:
+  systemMessage: |
+    Jenkins is managed from Git.
+    Configuration repository: jenkins_dsljob
+
+  numExecutors: 0
+
+  mode: EXCLUSIVE
+
+  disableRememberMe: false
+
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+  securityRealm:
+    local:
+      allowsSignup: false
+      enableCaptcha: false
+
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: JENKINS_CONFIG_REPO
+            value: jenkins_dsljob
+
+unclassified:
+
+  location:
+    url: "https://YOUR-JENKINS-URL/"
+
+  globalLibraries:
+    libraries:
+      - name: jenkins_dsljob
+        defaultVersion: main
+        implicit: false
+        allowVersionOverride: true
+
+        retriever:
+          modernSCM:
+            scm:
+              git:
+                remote: "https://github.com/glhome/jenkins_dsljob.git"
+                traits:
+                  - gitBranchDiscovery

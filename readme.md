@@ -16,7 +16,7 @@ jenkins_dsljob/
 │
 ├── README.md
 │
-├── vars/
+├── vars/                              # Shared Pipeline Library
 │   ├── labviewPipeline.groovy
 │   ├── labviewBuild.groovy
 │   ├── labviewPackage.groovy
@@ -25,15 +25,30 @@ jenkins_dsljob/
 │   ├── labviewEnvironment.groovy
 │   ├── labviewMetadata.groovy
 │   ├── labviewNotifications.groovy
-│   └── artifactoryPublish.groovy
+│   ├── artifactoryPublish.groovy
+│   └── repoScanner.groovy
 │
 ├── src/
-│   └── ...
 │
-├── resources/
-│   └── ...
+├── resources/                         # Shared Library resources
+│   └── scripts/
+│       └── scanner/
+│           └── scan-repos.ps1
 │
-└── jenkins-infra/
+├── jenkins-config/                    # Jenkins controller configuration
+│   │
+│   ├── casc/
+│   │   ├── jenkins.yaml               # Main JCasC config
+│   │   ├── credentials.yaml           # Credential definitions
+│   │   ├── libraries.yaml             # Global Shared Libraries
+│   │   └── agents.yaml                # Jenkins agents
+│   │
+│   └── bootstrap/
+│       ├── bootstrap.ps1              # Windows bootstrap
+│       ├── bootstrap.sh               # Linux bootstrap
+│       └── README.md
+│
+└── jenkins-infra/                     # Job DSL / Jenkins jobs
     │
     ├── seed/
     │   └── seed.groovy
@@ -50,13 +65,60 @@ jenkins_dsljob/
     │   └── catalys.groovy
     │
     ├── jobs/
-    │   └── bridge/
-    │       └── installer.groovy
+    │   ├── bridge/
+    │   │   └── installer.groovy
+    │   │
+    │   └── utilities/
+    │       └── repo-scan.groovy
     │
     └── pipelines/
-        └── bridge/
-            └── installer.groovy
+        ├── bridge/
+        │   └── installer.groovy
+        │
+        └── utilities/
+            └── repo-scan.groovy
 ```
+
+---
+| Directory                  | Responsibility                       |
+| -------------------------- | ------------------------------------ |
+| `jenkins-config/`          | Configure Jenkins itself             |
+| `jenkins-infra/seed/`      | Bootstrap Job DSL                    |
+| `jenkins-infra/jobs/`      | Create Jenkins jobs                  |
+| `jenkins-infra/pipelines/` | Pipeline definitions                 |
+| `jenkins-infra/folders/`   | Jenkins folders                      |
+| `jenkins-infra/views/`     | Jenkins views                        |
+| `vars/`                    | Reusable Pipeline functions          |
+| `resources/`               | Scripts/files used by Shared Library |
+
+---
+'''text
+                    GitHub
+                       │
+                       ▼
+                jenkins_dsljob
+                       │
+        ┌──────────────┼───────────────┐
+        │              │               │
+        ▼              ▼               ▼
+   jenkins-config  jenkins-infra     Shared Library
+        │              │               │
+        │              │               │
+        ▼              ▼               ▼
+      JCasC         Job DSL          vars/
+        │              │               │
+        │              ▼               ▼
+        │        Jenkins Jobs      repoScanner()
+        │                               │
+        │                               ▼
+        │                         resources/
+        │                               │
+        │                               ▼
+        │                        scan-repos.ps1
+        │
+        ▼
+ Jenkins Controller
+'''
 
 ---
 

@@ -1,0 +1,22 @@
+unclassified:
+
+  globalLibraries:
+
+    libraries:
+
+      - name: jenkins_dsljob
+
+        defaultVersion: main
+
+        implicit: false
+
+        allowVersionOverride: true
+
+        retriever:
+          modernSCM:
+            scm:
+              git:
+                remote: "https://github.com/glhome/jenkins_dsljob.git"
+
+                traits:
+                  - gitBranchDiscovery
