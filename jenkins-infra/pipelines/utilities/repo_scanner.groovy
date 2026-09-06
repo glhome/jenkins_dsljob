@@ -1,115 +1,56 @@
+@Library('jenkins_dsljob') _
+
 pipeline {
 
-    agent any
+    agent {
+        label 'windows'
+    }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
 
     parameters {
 
         string(
-            name: 'GIT_URL',
+            name: 'BITBUCKET_PROJECT',
             defaultValue: '',
-            description: 'Git repository URL'
+            description: 'Bitbucket project key'
         )
 
         string(
-            name: 'BRANCH',
-            defaultValue: 'main',
-            description: 'Git branch to scan'
+            name: 'BITBUCKET_REPO',
+            defaultValue: '',
+            description: 'Repository name. Blank = all repositories.'
         )
 
-        string(
-            name: 'OUTPUT_FILE',
-            defaultValue: 'repo-scan-results.json',
-            description: 'Scanner output file'
+        booleanParam(
+            name: 'SCAN_BRANCHES',
+            defaultValue: true,
+            description: 'Scan branches'
+        )
+
+        booleanParam(
+            name: 'SCAN_TAGS',
+            defaultValue: false,
+            description: 'Scan tags'
         )
     }
 
     stages {
 
-        stage('Validate') {
+        stage('Repository Scan') {
 
             steps {
 
-                script {
-
-                    if (!params.GIT_URL?.trim()) {
-                        error('GIT_URL must be specified.')
-                    }
-
-                    if (!params.BRANCH?.trim()) {
-                        error('BRANCH must be specified.')
-                    }
-
-                    echo "Repository: ${params.GIT_URL}"
-                    echo "Branch: ${params.BRANCH}"
-                }
-            }
-        }
-
-        stage('Checkout Repository') {
-
-            steps {
-
-                dir('repository') {
-
-                    git(
-                        url: params.GIT_URL,
-                        branch: params.BRANCH
-                    )
-                }
-            }
-        }
-
-        stage('Scan Repository') {
-
-            steps {
-
-                powershell """
-
-                    \$repoPath = "\$env:WORKSPACE\\repository"
-
-                    Write-Host "Scanning:"
-                    Write-Host \$repoPath
-
-                     & ".\\\\scripts\\\\scanner\\\\scan-repos.ps1" `
-                        -RepositoryRoot \$repoPath `
-                        -OutputFile "\$env:WORKSPACE\\${params.OUTPUT_FILE}"
-
-                    if (\$LASTEXITCODE -ne 0) {
-                        throw "Repository scanner failed."
-                    }
-                """
-            }
-        }
-
-        stage('Display Results') {
-
-            steps {
-
-                powershell """
-
-                    Get-Content `
-                        "\$env:WORKSPACE\\${params.OUTPUT_FILE}"
-                """
-            }
-        }
-
-        stage('Archive Results') {
-
-            steps {
-
-                archiveArtifacts(
-                    artifacts: params.OUTPUT_FILE,
-                    fingerprint: true
+                repoScanner(
+                    project: params.BITBUCKET_PROJECT,
+                    repository: params.BITBUCKET_REPO,
+                    scanBranches: params.SCAN_BRANCHES,
+                    scanTags: params.SCAN_TAGS
                 )
             }
-        }
-    }
-
-    post {
-
-        always {
-
-            deleteDir()
         }
     }
 }
