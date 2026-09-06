@@ -1,4 +1,4 @@
-pipelineJob('Catalys/Gui') {
+pipelineJob('managed/catalys/gui') {
 
     description('Catalys GUI Build')
 
@@ -28,7 +28,7 @@ pipelineJob('Catalys/Gui') {
 
             script(
                 readFileFromWorkspace(
-                    'pipelines/catalys/gui.groovy'
+                    'jenkins-infra/pipelines/catalys/gui.groovy'
                 )
             )
 

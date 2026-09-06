@@ -1,0 +1,24 @@
+{
+    "image": {
+        "name": "windows_base_iot_1809",
+        "os": "Windows10",
+        "release": "1809",
+        "architecture": "x64"
+    },
+
+    "artifactory": {
+        "sourceRepository": "snapshot",
+        "sourcePath": "windows-image/window10/1809/windows_base_iot_1809.wim",
+
+        "destinationRepository": "snapshot",
+        "destinationPath": "windows-image/window10/1809/updated"
+    },
+
+    "build": {
+        "workspace": "C:\\WindowsImageBuild",
+        "mountPath": "C:\\WindowsImageBuild\\mount",
+        "sourcePath": "C:\\WindowsImageBuild\\source",
+        "updatesPath": "C:\\WindowsImageBuild\\updates",
+        "outputPath": "C:\\WindowsImageBuild\\output"
+    }
+}

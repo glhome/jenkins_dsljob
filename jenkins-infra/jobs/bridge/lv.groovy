@@ -27,7 +27,7 @@ pipelineJob('managed/bridge/lv') {
         cps {
             script(
                 readFileFromWorkspace(
-                    'pipelines/bridge/lv.groovy'
+                    'jenkins-infra/pipelines/bridge/lv.groovy'
                 )
             )
 

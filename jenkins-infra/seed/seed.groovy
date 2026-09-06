@@ -18,9 +18,9 @@ pipeline {
             steps {
                 jobDsl(
                     targets: '''
-                        folders/**/*.groovy
-                        views/**/*.groovy
-                        jobs/**/*.groovy
+                        jenkins-infra/folders/**/*.groovy
+                        jenkins-infra/views/**/*.groovy
+                        jenkins-infra/jobs/**/*.groovy
                     ''',
 
                     lookupStrategy: 'SEED_JOB',

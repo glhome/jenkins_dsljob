@@ -1,6 +1,6 @@
-pipelineJob('managed/bridge/installer') {
+pipelineJob('managed/bridge/gui') {
 
-    description('Managed Bridge Installer Build')
+    description('Managed Bridge GUI Build')
 
     logRotator {
         daysToKeep(30)
@@ -10,15 +10,9 @@ pipelineJob('managed/bridge/installer') {
     parameters {
 
         stringParam(
-            'PRODUCT_VERSION',
-            'v7.2',
-            'Catalys Product Version'
-        )
-
-        stringParam(
-            'BRIDGE_VERSION',
-            'v1.0',
-            'Bridge Version'
+            'BRANCH',
+            'main',
+            'Git branch to build'
         )
 
         booleanParam(
@@ -31,10 +25,9 @@ pipelineJob('managed/bridge/installer') {
     definition {
 
         cps {
-
             script(
                 readFileFromWorkspace(
-                    'pipelines/bridge/installer.groovy'
+                    'jenkins-infra/pipelines/bridge/gui.groovy'
                 )
             )
 

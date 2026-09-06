@@ -1,4 +1,4 @@
-pipelineJob('Catalys/LV') {
+pipelineJob('managed/catalys/lv') {
 
     description('Catalys LV Build')
 
@@ -28,7 +28,7 @@ pipelineJob('Catalys/LV') {
 
             script(
                 readFileFromWorkspace(
-                    'pipelines/catalys/lv.groovy'
+                    'jenkins-infra/pipelines/catalys/lv.groovy'
                 )
             )
 
