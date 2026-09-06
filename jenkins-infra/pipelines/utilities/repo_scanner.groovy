@@ -70,7 +70,7 @@ pipeline {
                     Write-Host "Scanning:"
                     Write-Host \$repoPath
 
-                    & "\$env:WORKSPACE\\scripts\\scanner\\scan-repos.ps1" `
+                     & ".\\\\scripts\\\\scanner\\\\scan-repos.ps1" `
                         -RepositoryRoot \$repoPath `
                         -OutputFile "\$env:WORKSPACE\\${params.OUTPUT_FILE}"
 
