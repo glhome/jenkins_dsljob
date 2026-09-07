@@ -1,43 +1,29 @@
 pipelineJob('managed/utilities/repo_scanner') {
 
-    description(
-        'Scan repositories and identify languages, build systems and CI configuration'
-    )
-
-    logRotator {
-        daysToKeep(30)
-        numToKeep(50)
-    }
+    description('Scan a single Git repository')
 
     parameters {
 
         stringParam(
-            'GIT_URL',
+            'REPOSITORY_URL',
             '',
-            'Git repository URL'
+            'Git repository URL to scan'
         )
 
         stringParam(
-            'BRANCH',
+            'REPOSITORY_BRANCH',
             'main',
             'Git branch to scan'
         )
-
-        stringParam(
-            'OUTPUT_FILE',
-            'repo-scan-results.json',
-            'Scanner output file'
-        )
     }
+
     definition {
-
         cps {
+            script("""
+                @Library('jenkins_dsljob') _
 
-            script(
-                readFileFromWorkspace(
-                    'jenkins-infra/pipelines/utilities/repo_scanner.groovy'
-                )
-            )
+                repoScannerPipeline()
+            """.stripIndent())
 
             sandbox()
         }
