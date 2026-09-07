@@ -1,16 +1,8 @@
 folder('utilities')
 
 pipelineJob('utilities/windows-image') {
-    description('Builds a serviced Windows ISO by applying SSU and LCU updates to a base Windows image.')
 
-    buildDiscarder {
-        logRotator {
-            daysToKeepStr('30')
-            numToKeepStr('20')
-            artifactDaysToKeepStr('30')
-            artifactNumToKeepStr('10')
-        }
-    }
+    description('Builds a serviced Windows ISO by applying SSU and LCU updates to a base Windows image.')
 
     parameters {
         stringParam('BASE_ISO_URL', '', 'URL of the base Windows ISO')
