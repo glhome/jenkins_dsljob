@@ -3,7 +3,9 @@ def call() {
     echo "========================================"
     echo "Repository Scanner"
     echo "========================================"
-    echo "Workspace: ${env.WORKSPACE}"
+    echo "Target Repository: ${params.REPOSITORY_URL}"
+    echo "Branch:           ${params.REPOSITORY_BRANCH}"
+    echo "Workspace:        ${env.WORKSPACE}"
     echo "========================================"
 
     def scannerFiles = [
@@ -17,8 +19,6 @@ def call() {
 
         def resourcePath = "scripts/scanner/${fileName}"
 
-        echo "Loading Shared Library resource: ${resourcePath}"
-
         def content = libraryResource(resourcePath)
 
         writeFile(
@@ -27,18 +27,18 @@ def call() {
         )
     }
 
-    powershell '''
-        & .\\scan-repo.ps1 `
-            -RepositoryPath "$env:WORKSPACE" `
+    powershell """
+        .\\scan-repo.ps1 `
+            -RepositoryPath "\$env:WORKSPACE" `
+            -RepositoryUrl "${params.REPOSITORY_URL}" `
             -OutputFile "repo-scan-results.json"
 
-        if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+        if (\$LASTEXITCODE -ne 0) {
+            exit \$LASTEXITCODE
         }
-    '''
+    """
 
-    archiveArtifacts(
-        artifacts: 'repo-scan-results.json',
-        fingerprint: true
-    )
+    if (!fileExists('repo-scan-results.json')) {
+        error('Repository scanner did not generate repo-scan-results.json')
+    }
 }
