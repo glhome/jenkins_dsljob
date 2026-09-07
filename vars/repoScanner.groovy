@@ -1,17 +1,21 @@
 def call(Map config = [:]) {
 
-    def project = config.get('project', '')
-    def repository = config.get('repository', '')
-    def scanBranches = config.get('scanBranches', true)
-    def scanTags = config.get('scanTags', false)
+    def repositoryPath = config.get('repositoryPath', '')
 
-    def scriptName = 'scan-repos.ps1'
+    if (!repositoryPath?.trim()) {
+        error("REPOSITORY_PATH is required.")
+    }
 
-    echo "Preparing repository scanner..."
+    echo "========================================"
+    echo "Repository Scanner"
+    echo "========================================"
+    echo "Repository: ${repositoryPath}"
+    echo "========================================"
 
-    // Load PowerShell script from Shared Library resources
+    def scriptName = 'scan-repo.ps1'
+
     def scanScript = libraryResource(
-        'scripts/scanner/scan-repos.ps1'
+        'scripts/scanner/scan-repo.ps1'
     )
 
     writeFile(
@@ -19,15 +23,18 @@ def call(Map config = [:]) {
         text: scanScript
     )
 
-    echo "Scanning Bitbucket repositories"
-    echo "Project    : ${project}"
-    echo "Repository : ${repository ?: 'ALL'}"
-
     powershell """
-        .\\${scriptName} `
-            -BitbucketProject '${project}' `
-            -Repository '${repository}' `
-            -ScanBranches:${scanBranches} `
-            -ScanTags:${scanTags}
+        & .\\${scriptName} `
+            -RepositoryPath '${repositoryPath}' `
+            -OutputFile 'repo-scan-results.json'
+
+        if (\$LASTEXITCODE -ne 0) {
+            exit \$LASTEXITCODE
+        }
     """
+
+    archiveArtifacts(
+        artifacts: 'repo-scan-results.json',
+        fingerprint: true
+    )
 }

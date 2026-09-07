@@ -92,7 +92,10 @@ jenkins_dsljob/
 | `resources/`               | Scripts/files used by Shared Library |
 
 ---
-'''text
+
+```text
+
+
                     GitHub
                        │
                        ▼
@@ -118,7 +121,8 @@ jenkins_dsljob/
         │
         ▼
  Jenkins Controller
-'''
+
+```
 
 ---
 
