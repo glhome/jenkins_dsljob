@@ -39,7 +39,7 @@ pipeline {
                     ]],
                     userRemoteConfigs: [[
                         url: params.REPOSITORY_URL,
-                        credentialsId: 'bitbucket-credentials'
+                        credentialsId: 'github-credentials'
                     ]]
                 ])
             }
