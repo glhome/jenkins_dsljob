@@ -35,7 +35,7 @@ pipeline {
                 checkout([
                     $class: 'GitSCM',
                     branches: [[
-                        name: params.REPOSITORY_BRANCH
+                        name: "*/${params.REPOSITORY_BRANCH}"
                     ]],
                     userRemoteConfigs: [[
                         url: params.REPOSITORY_URL,
