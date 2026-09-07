@@ -1,4 +1,7 @@
 def call(Map cfg = [:]) {
+    properties([
+        disableConcurrentBuilds()
+    ])
     def baseIsoUrl = cfg.baseIsoUrl ?: ''
     def baseIsoSha256 = cfg.baseIsoSha256 ?: ''
     def ssuUrl = cfg.ssuUrl ?: ''
