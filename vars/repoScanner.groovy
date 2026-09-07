@@ -1,15 +1,9 @@
-def call(Map config = [:]) {
-
-    def repositoryPath = config.get('repositoryPath', '')
-
-    if (!repositoryPath?.trim()) {
-        error("REPOSITORY_PATH is required.")
-    }
+def call() {
 
     echo "========================================"
     echo "Repository Scanner"
     echo "========================================"
-    echo "Repository: ${repositoryPath}"
+    echo "Workspace: ${env.WORKSPACE}"
     echo "========================================"
 
     def scriptName = 'scan-repo.ps1'
@@ -25,7 +19,7 @@ def call(Map config = [:]) {
 
     powershell """
         & .\\${scriptName} `
-            -RepositoryPath '${repositoryPath}' `
+            -RepositoryPath '${env.WORKSPACE}' `
             -OutputFile 'repo-scan-results.json'
 
         if (\$LASTEXITCODE -ne 0) {

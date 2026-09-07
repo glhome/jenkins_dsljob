@@ -14,21 +14,42 @@ pipeline {
     parameters {
 
         string(
-            name: 'REPOSITORY_PATH',
+            name: 'REPOSITORY_URL',
             defaultValue: '',
-            description: 'Full path to the repository to scan'
+            description: 'Git repository URL to scan'
+        )
+
+        string(
+            name: 'REPOSITORY_BRANCH',
+            defaultValue: 'main',
+            description: 'Git branch to scan'
         )
     }
 
     stages {
 
+        stage('Checkout Repository') {
+
+            steps {
+
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[
+                        name: params.REPOSITORY_BRANCH
+                    ]],
+                    userRemoteConfigs: [[
+                        url: params.REPOSITORY_URL,
+                        credentialsId: 'bitbucket-credentials'
+                    ]]
+                ])
+            }
+        }
+
         stage('Repository Scan') {
 
             steps {
 
-                repoScanner(
-                    repositoryPath: params.REPOSITORY_PATH
-                )
+                repoScanner()
             }
         }
     }
