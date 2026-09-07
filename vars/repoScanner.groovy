@@ -6,26 +6,36 @@ def call() {
     echo "Workspace: ${env.WORKSPACE}"
     echo "========================================"
 
-    def scriptName = 'scan-repo.ps1'
+    def scannerFiles = [
+        'scan-repo.ps1',
+        'config.json',
+        'detect-language.ps1',
+        'detect-build-system.ps1'
+    ]
 
-    def scanScript = libraryResource(
-        'scripts/scanner/scan-repo.ps1'
-    )
+    scannerFiles.each { fileName ->
 
-    writeFile(
-        file: scriptName,
-        text: scanScript
-    )
+        def resourcePath = "scripts/scanner/${fileName}"
 
-    powershell """
-        & .\\${scriptName} `
-            -RepositoryPath '${env.WORKSPACE}' `
-            -OutputFile 'repo-scan-results.json'
+        echo "Loading Shared Library resource: ${resourcePath}"
 
-        if (\$LASTEXITCODE -ne 0) {
-            exit \$LASTEXITCODE
+        def content = libraryResource(resourcePath)
+
+        writeFile(
+            file: fileName,
+            text: content
+        )
+    }
+
+    powershell '''
+        & .\\scan-repo.ps1 `
+            -RepositoryPath "$env:WORKSPACE" `
+            -OutputFile "repo-scan-results.json"
+
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
         }
-    """
+    '''
 
     archiveArtifacts(
         artifacts: 'repo-scan-results.json',
