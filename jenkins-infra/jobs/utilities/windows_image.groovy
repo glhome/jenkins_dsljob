@@ -2,7 +2,7 @@ folder('utilities')
 
 pipelineJob('utilities/windows-image') {
     description('Builds a serviced Windows ISO by applying SSU and LCU updates to a base Windows image.')
-    disableConcurrentBuilds()
+    concurrentBuild(false)
 
     buildDiscarder {
         logRotator {
