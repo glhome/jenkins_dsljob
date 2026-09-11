@@ -4,7 +4,9 @@ pipelineJob('utilities/windows-image') {
     description('Builds a serviced Windows ISO by applying SSU and LCU updates to an immutable Microsoft base Windows image.')
 
     // Job DSL syntax — NOT disableConcurrentBuilds()
-    concurrentBuild(false)
+    properties {
+        disableConcurrentBuilds()
+    }
 
     buildDiscarder {
         logRotator {
