@@ -8,13 +8,9 @@ pipelineJob('utilities/windows-image') {
         disableConcurrentBuilds()
     }
 
-    buildDiscarder {
-        logRotator {
-            daysToKeep(30)
-            numToKeep(20)
-            artifactDaysToKeep(30)
-            artifactNumToKeep(10)
-        }
+    logRotator {
+        numToKeep(20)
+        daysToKeep(30)
     }
 
     parameters {
