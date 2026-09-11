@@ -1,26 +1,28 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$WorkRoot,[int]$ImageIndex=1)
 $ErrorActionPreference="Stop"
-$sourceRoot=Join-Path $WorkRoot "source"
-$mountRoot=Join-Path $WorkRoot "mount\install"
-$downloadRoot=Join-Path $WorkRoot "download"
-$installWim=Join-Path $sourceRoot "sources\install.wim"
-$ssu=Join-Path $downloadRoot "ssu.msu"
-$lcu=Join-Path $downloadRoot "lcu.msu"
-New-Item -ItemType Directory -Path $mountRoot -Force | Out-Null
-if (-not (Test-Path $installWim)) { throw "install.wim not found." }
-& dism.exe /Mount-Wim /WimFile:$installWim /Index:$ImageIndex /MountDir:$mountRoot
-if ($LASTEXITCODE -ne 0) { throw "DISM failed to mount install.wim." }
+$src=Join-Path $WorkRoot "source";$mnt=Join-Path $WorkRoot "mount\install"
+$pkgs=Join-Path $WorkRoot "download\updates";$resolved=Join-Path $WorkRoot "download\resolved-updates.json"
+$wim=Join-Path $src "sources\install.wim"
+New-Item -ItemType Directory -Force -Path $mnt|Out-Null
+if(!(Test-Path $wim)){throw "install.wim not found."};if(!(Test-Path $resolved)){throw "Resolved updates not found."}
+&dism.exe /Mount-Wim /WimFile:$wim /Index:$ImageIndex /MountDir:$mnt
+if($LASTEXITCODE-ne0){throw "DISM mount failed."}
 $mounted=$true
-try {
- if (Test-Path $ssu) { & dism.exe /Image:$mountRoot /Add-Package /PackagePath:$ssu; if ($LASTEXITCODE -ne 0) { throw "Failed applying SSU." } }
- if (Test-Path $lcu) { & dism.exe /Image:$mountRoot /Add-Package /PackagePath:$lcu; if ($LASTEXITCODE -ne 0) { throw "Failed applying LCU." } }
- & dism.exe /Image:$mountRoot /Cleanup-Image /StartComponentCleanup
- if ($LASTEXITCODE -ne 0) { throw "Component cleanup failed." }
- & dism.exe /Unmount-Wim /MountDir:$mountRoot /Commit
- if ($LASTEXITCODE -ne 0) { throw "Failed to commit WIM." }
+try{
+ $u=@(Get-Content $resolved -Raw|ConvertFrom-Json)
+ foreach($type in @("SSU","LCU")){
+  foreach($x in @($u|? type -eq $type)){
+   $p=Join-Path $pkgs $x.fileName
+   if(!(Test-Path $p)){throw "Package not found: $p"}
+   Write-Host "Applying $($x.type) $($x.kb)"
+   &dism.exe /Image:$mnt /Add-Package /PackagePath:$p
+   if($LASTEXITCODE-ne0){throw "Failed applying $($x.kb)"}
+  }
+ }
+ &dism.exe /Image:$mnt /Cleanup-Image /StartComponentCleanup
+ if($LASTEXITCODE-ne0){throw "Component cleanup failed."}
+ &dism.exe /Unmount-Wim /MountDir:$mnt /Commit
+ if($LASTEXITCODE-ne0){throw "WIM commit failed."}
  $mounted=$false
-} catch {
- if ($mounted) { & dism.exe /Unmount-Wim /MountDir:$mountRoot /Discard | Out-Null }
- throw
-}
+}catch{if($mounted){&dism.exe /Unmount-Wim /MountDir:$mnt /Discard|Out-Null};throw}

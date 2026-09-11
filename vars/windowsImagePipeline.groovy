@@ -1,18 +1,4 @@
 def call(Map cfg = [:]) {
-
-    properties([
-        disableConcurrentBuilds(),
-
-        buildDiscarder(
-            logRotator(
-                daysToKeepStr: '30',
-                numToKeepStr: '20',
-                artifactDaysToKeepStr: '30',
-                artifactNumToKeepStr: '10'
-            )
-        )
-    ])
-
     def baseIsoUrl = cfg.baseIsoUrl ?: ''
     def baseIsoSha256 = cfg.baseIsoSha256 ?: ''
     def ssuUrl = cfg.ssuUrl ?: ''
@@ -22,7 +8,7 @@ def call(Map cfg = [:]) {
     def imageIndex = cfg.imageIndex ?: 1
     def outputName = cfg.outputName ?: 'Windows-Custom'
     def agentLabel = cfg.agentLabel ?: 'windows-image-builder'
-    def workRoot = cfg.workRoot ?: "${env.WORKSPACE}\\windows-image"
+    def workRoot = cfg.workRoot ?: "${env.WORKSPACE}\windows-image"
     def keepWorkspace = cfg.keepWorkspace ?: false
 
     if (!baseIsoUrl?.trim()) {
@@ -30,18 +16,12 @@ def call(Map cfg = [:]) {
     }
 
     node(agentLabel) {
-
-        currentBuild.description =
-            "${outputName} | Index ${imageIndex}"
+        currentBuild.description = "${outputName} | Index ${imageIndex}"
 
         try {
-
             stage('Prepare') {
-                windowsImagePrepare(
-                    workRoot: workRoot
-                )
+                windowsImagePrepare(workRoot: workRoot)
             }
-
             stage('Download') {
                 windowsImageDownload(
                     workRoot: workRoot,
@@ -53,28 +33,15 @@ def call(Map cfg = [:]) {
                     lcuSha256: lcuSha256
                 )
             }
-
             stage('Extract ISO') {
-                windowsImageExtract(
-                    workRoot: workRoot,
-                    imageIndex: imageIndex
-                )
+                windowsImageExtract(workRoot: workRoot, imageIndex: imageIndex)
             }
-
             stage('Service Windows Image') {
-                windowsImageService(
-                    workRoot: workRoot,
-                    imageIndex: imageIndex
-                )
+                windowsImageService(workRoot: workRoot, imageIndex: imageIndex)
             }
-
             stage('Create ISO') {
-                windowsImageCreateIso(
-                    workRoot: workRoot,
-                    outputName: outputName
-                )
+                windowsImageCreateIso(workRoot: workRoot, outputName: outputName)
             }
-
             stage('Generate Manifest') {
                 windowsImageManifest(
                     workRoot: workRoot,
@@ -87,25 +54,16 @@ def call(Map cfg = [:]) {
                     buildId: env.BUILD_ID
                 )
             }
-
             stage('Archive Artifacts') {
                 archiveArtifacts(
                     artifacts: 'windows-image/output/*.iso,windows-image/output/*.sha256,windows-image/output/manifest.json',
                     fingerprint: true
                 )
             }
-
         } finally {
-
             if (!keepWorkspace) {
                 stage('Cleanup') {
-                    powershell("""
-                        if (Test-Path -LiteralPath '${workRoot}') {
-                            Remove-Item -LiteralPath '${workRoot}' `
-                                -Recurse -Force `
-                                -ErrorAction SilentlyContinue
-                        }
-                    """)
+                    powershell("if (Test-Path -LiteralPath '${workRoot}') { Remove-Item -LiteralPath '${workRoot}' -Recurse -Force -ErrorAction SilentlyContinue }")
                 }
             }
         }
