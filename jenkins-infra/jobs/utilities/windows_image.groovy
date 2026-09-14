@@ -15,9 +15,9 @@ pipelineJob('utilities/windows-image') {
 
     parameters {
         stringParam(
-            'BASE_ISO_URL',
-            '',
-            'URL of the immutable Microsoft base Windows ISO'
+            'BASE_ISO_PATH',
+            'E:\\en-us_windows_11_iot_enterprise_version_24h2_x64_dvd_3a99b72b.iso',
+            'Base Windows ISO on the build agent'
         )
 
         stringParam(
