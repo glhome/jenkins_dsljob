@@ -1,12 +1,8 @@
 folder('utilities')
 
 pipelineJob('utilities/windows-image') {
-    description('Builds a serviced Windows ISO by applying SSU and LCU updates to an immutable Microsoft base Windows image.')
 
-    // Job DSL syntax — NOT disableConcurrentBuilds()
-    properties {
-        disableConcurrentBuilds()
-    }
+    description('Builds a serviced Windows ISO by applying SSU and LCU updates to an immutable Microsoft base Windows image.')
 
     logRotator {
         numToKeep(20)
@@ -14,6 +10,7 @@ pipelineJob('utilities/windows-image') {
     }
 
     parameters {
+
         stringParam(
             'BASE_ISO_PATH',
             'E:\\en-us_windows_11_iot_enterprise_version_24h2_x64_dvd_3a99b72b.iso',
@@ -93,7 +90,7 @@ pipelineJob('utilities/windows-image') {
 @Library('jenkins_dsljob') _
 
 windowsImagePipeline(
-    baseIsoUrl: params.BASE_ISO_URL,
+    baseIsoPath: params.BASE_ISO_PATH,
     baseIsoSha256: params.BASE_ISO_SHA256,
 
     windowsBuild: params.WINDOWS_BUILD,
