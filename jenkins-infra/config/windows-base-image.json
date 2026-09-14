@@ -1,17 +1,17 @@
 {
     "image": {
-        "name": "windows_base_iot_1809",
-        "os": "Windows10",
-        "release": "1809",
+        "name": "windows_base_iot_24h2",
+        "os": "Windows11",
+        "release": "24H2",
         "architecture": "x64"
     },
 
     "artifactory": {
         "sourceRepository": "snapshot",
-        "sourcePath": "windows-image/window10/1809/windows_base_iot_1809.wim",
+        "sourcePath": "windows-image/window11/24h2/windows_base_iot_24h2.wim",
 
         "destinationRepository": "snapshot",
-        "destinationPath": "windows-image/window10/1809/updated"
+        "destinationPath": "windows-image/window11/24h2/updated"
     },
 
     "build": {
