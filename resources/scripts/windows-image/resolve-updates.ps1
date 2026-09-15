@@ -1,19 +1,43 @@
-[CmdletBinding()]
 param(
- [Parameter(Mandatory=$true)][string]$WorkRoot,
- [Parameter(Mandatory=$true)][string]$WindowsBuild,
- [string]$Architecture="x64",
- [string]$UpdateManifestUrl="",
- [string]$UpdateManifestFile=""
+    [Parameter(Mandatory)]
+    [string]$WorkRoot,
+
+    [Parameter(Mandatory)]
+    [string]$WindowsBuild,
+
+    [Parameter(Mandatory)]
+    [string]$Architecture,
+
+    [string]$ArtifactoryBaseUrl,
+
+    [string]$ArtifactoryRepo = "windows-updates"
 )
-$ErrorActionPreference="Stop"
-$out=Join-Path $WorkRoot "download\update-selection.json"
-New-Item -ItemType Directory -Force -Path (Split-Path $out)|Out-Null
-if($UpdateManifestFile){if(!(Test-Path $UpdateManifestFile)){throw "Update manifest file not found: $UpdateManifestFile"};Copy-Item $UpdateManifestFile $out -Force}
-elseif($UpdateManifestUrl){Invoke-WebRequest -Uri $UpdateManifestUrl -OutFile $out -UseBasicParsing}
-else{throw "Provide UpdateManifestUrl or UpdateManifestFile."}
-$m=Get-Content $out -Raw|ConvertFrom-Json
-$u=@($m.updates|Where-Object{$_.type -in @("SSU","LCU") -and $_.kb -and $_.sourceUrl})
-if(!$u){throw "No applicable SSU/LCU entries found."}
-$u|ConvertTo-Json -Depth 10|Set-Content $out -Encoding UTF8
-Write-Host "Selected updates:"; $u|%{Write-Host "  $($_.type) $($_.kb)"}
+
+$ErrorActionPreference = "Stop"
+
+$downloadDir = Join-Path $WorkRoot "download"
+$updateDir = Join-Path $downloadDir "updates"
+$manifest = Join-Path $downloadDir "resolved-updates.json"
+
+New-Item -ItemType Directory -Force -Path $updateDir | Out-Null
+
+Write-Host "=========================================="
+Write-Host "Automatic Windows Update Resolution"
+Write-Host "=========================================="
+Write-Host "Build        : $WindowsBuild"
+Write-Host "Architecture : $Architecture"
+Write-Host "Artifactory  : $ArtifactoryBaseUrl"
+Write-Host "Repository   : $ArtifactoryRepo"
+Write-Host ""
+
+# Resolver implementation goes here.
+#
+# It must:
+#
+# 1. Find the current applicable SSU.
+# 2. Find the current applicable LCU.
+# 3. Check Artifactory.
+# 4. Download missing packages from Microsoft.
+# 5. SHA256 validate packages.
+# 6. Publish missing packages to Artifactory.
+# 7. Write resolved-updates.json.
