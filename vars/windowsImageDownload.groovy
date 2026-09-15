@@ -6,11 +6,8 @@ def call(Map cfg = [:]) {
     def windowsBuild = cfg.windowsBuild ?: '26100'
     def architecture = cfg.architecture ?: 'x64'
 
-    def artifactoryBaseUrl =
-        cfg.artifactoryBaseUrl ?: ''
-
-    def artifactoryRepo =
-        cfg.artifactoryRepo ?: 'windows-updates'
+    def artifactoryBaseUrl = cfg.artifactoryBaseUrl ?: ''
+    def artifactoryRepo = cfg.artifactoryRepo ?: 'windows-updates'
 
     if (!workRoot?.trim()) {
         error 'workRoot is required'
@@ -30,10 +27,6 @@ def call(Map cfg = [:]) {
     echo "Artifactory     : ${artifactoryBaseUrl}"
     echo "Repository      : ${artifactoryRepo}"
 
-    // ---------------------------------------------------------
-    // Stage local base ISO
-    // ---------------------------------------------------------
-
     def downloadDir = "${workRoot}\\download"
     def baseIso = "${downloadDir}\\base.iso"
 
@@ -44,9 +37,6 @@ def call(Map cfg = [:]) {
         \$downloadDir = '${downloadDir}'
         \$baseIso = '${baseIso}'
 
-        Write-Host 'Checking source ISO...'
-        Write-Host "  \$sourceIso"
-
         if (!(Test-Path -LiteralPath \$sourceIso -PathType Leaf)) {
             throw "Base ISO not found: \$sourceIso"
         }
@@ -55,11 +45,6 @@ def call(Map cfg = [:]) {
             -ItemType Directory `
             -Force `
             -Path \$downloadDir | Out-Null
-
-        Write-Host ''
-        Write-Host 'Copying base ISO to workspace...'
-        Write-Host "  Source      : \$sourceIso"
-        Write-Host "  Destination : \$baseIso"
 
         Copy-Item `
             -LiteralPath \$sourceIso `
@@ -74,14 +59,9 @@ def call(Map cfg = [:]) {
             -LiteralPath \$baseIso `
             -Algorithm SHA256
 
-        Write-Host ''
-        Write-Host 'Base ISO staged successfully.'
-        Write-Host "  SHA-256: \$($hash.Hash)"
+        Write-Host "Base ISO staged successfully."
+        Write-Host "SHA-256: \$($hash.Hash)"
     """
-
-    // ---------------------------------------------------------
-    // Resolve newest Microsoft update
-    // ---------------------------------------------------------
 
     def resolver = libraryResource(
         'scripts/windows-image/resolve-updates.ps1'
@@ -95,11 +75,6 @@ def call(Map cfg = [:]) {
     powershell """
         \$ErrorActionPreference = 'Stop'
 
-        Write-Host ''
-        Write-Host '============================================================'
-        Write-Host ' Resolving Microsoft Windows Updates'
-        Write-Host '============================================================'
-
         & '${env.WORKSPACE}\\resolve-updates.ps1' `
             -WorkRoot '${workRoot}' `
             -WindowsBuild '${windowsBuild}' `
@@ -108,20 +83,11 @@ def call(Map cfg = [:]) {
             -ArtifactoryRepo '${artifactoryRepo}'
     """
 
-    // ---------------------------------------------------------
-    // Verify the resolver produced exactly what the service
-    // stage expects.
-    // ---------------------------------------------------------
-
     powershell """
         \$ErrorActionPreference = 'Stop'
 
-        \$downloadDir = '${downloadDir}'
-        \$manifest = Join-Path \$downloadDir 'resolved-updates.json'
-        \$updateDir = Join-Path \$downloadDir 'updates'
-
-        Write-Host ''
-        Write-Host 'Verifying resolved update files...'
+        \$manifest = '${downloadDir}\\resolved-updates.json'
+        \$updateDir = '${downloadDir}\\updates'
 
         if (!(Test-Path -LiteralPath \$manifest -PathType Leaf)) {
             throw "Resolved update manifest was not created: \$manifest"
@@ -132,17 +98,16 @@ def call(Map cfg = [:]) {
         }
 
         \$updates = @(
-            Get-ChildItem `
-                -LiteralPath \$updateDir `
-                -File `
-                -Include *.msu,*.cab
+            Get-ChildItem -LiteralPath \$updateDir -File |
+            Where-Object {
+                \$_.Extension -in @('.msu', '.cab')
+            }
         )
 
         if (\$updates.Count -eq 0) {
             throw "No update packages were resolved in: \$updateDir"
         }
 
-        Write-Host ''
         Write-Host 'Resolved update packages:'
 
         foreach (\$update in \$updates) {
