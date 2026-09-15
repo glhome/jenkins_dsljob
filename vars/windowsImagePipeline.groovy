@@ -46,7 +46,8 @@ def call(Map cfg = [:]) {
         stage('Service Windows Image') {
             windowsImageService(
                 workRoot: workRoot,
-                imageIndex: imageIndex
+                imageIndex: imageIndex,
+                resolvedUpdates: "${workRoot}\\download\\updates"
             )
         }
 
