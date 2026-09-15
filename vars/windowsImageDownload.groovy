@@ -1,19 +1,41 @@
 def call(Map cfg = [:]) {
+
     def workRoot = cfg.workRoot
-    def baseIsoUrl = cfg.baseIsoUrl
-    if (!workRoot) error 'workRoot is required'
-    if (!baseIsoUrl) error 'baseIsoUrl is required'
+    def baseIsoPath = cfg.baseIsoPath
 
-    def script = libraryResource('scripts/windows-image/download.ps1')
-    def scriptPath = "${env.WORKSPACE}/download-windows-image.ps1"
-    writeFile file: scriptPath, text: script
+    if (!workRoot?.trim()) {
+        error 'workRoot is required'
+    }
 
-    def args = ["-WorkRoot '${workRoot}'", "-BaseIsoUrl '${baseIsoUrl}'"]
-    if (cfg.baseIsoSha256) args << "-BaseIsoSha256 '${cfg.baseIsoSha256}'"
-    if (cfg.ssuUrl) args << "-SsuUrl '${cfg.ssuUrl}'"
-    if (cfg.ssuSha256) args << "-SsuSha256 '${cfg.ssuSha256}'"
-    if (cfg.lcuUrl) args << "-LcuUrl '${cfg.lcuUrl}'"
-    if (cfg.lcuSha256) args << "-LcuSha256 '${cfg.lcuSha256}'"
+    if (!baseIsoPath?.trim()) {
+        error 'baseIsoPath is required'
+    }
 
-    powershell("& '${scriptPath}' ${args.join(' ')}")
+    if (!fileExists(baseIsoPath)) {
+        error "Base ISO not found: ${baseIsoPath}"
+    }
+
+    def downloadDir = "${workRoot}\\download"
+    def baseIso = "${downloadDir}\\base.iso"
+
+    powershell """
+        New-Item -ItemType Directory -Force `
+            -Path '${downloadDir}' | Out-Null
+
+        Write-Host "Copying base ISO..."
+        Write-Host "Source: ${baseIsoPath}"
+        Write-Host "Destination: ${baseIso}"
+
+        Copy-Item `
+            -LiteralPath '${baseIsoPath}' `
+            -Destination '${baseIso}' `
+            -Force
+
+        if (!(Test-Path -LiteralPath '${baseIso}')) {
+            throw "Failed to stage base ISO: ${baseIso}"
+        }
+
+        Write-Host "Base ISO staged successfully:"
+        Write-Host '${baseIso}'
+    """
 }
