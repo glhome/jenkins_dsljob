@@ -37,7 +37,7 @@ def call(Map cfg = [:]) {
                 )
             }
 
-            stage('Download') {
+            /*stage('Download') {
                 windowsImageDownload(
                     workRoot: workRoot,
                     baseIsoPath: baseIsoPath,
@@ -52,7 +52,7 @@ def call(Map cfg = [:]) {
                     artifactoryBaseUrl: artifactoryBaseUrl,
                     artifactoryRepo: artifactoryRepo
                 )
-            }
+            }*/
 
             stage('Extract ISO') {
                 windowsImageExtract(
