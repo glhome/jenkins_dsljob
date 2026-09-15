@@ -139,13 +139,8 @@ function Get-CatalogDownloadUrls {
 
     $content = $response.Content
 
-    # Microsoft has used several download domains.
-    $content = $content.Replace(
-        "www.download.windowsupdate.com",
-        "download.windowsupdate.com"
-    )
-
-    $pattern = "(https?://(?:download\.windowsupdate\.com|dl\.delivery\.mp\.microsoft\.com|catalog\.s\.download\.windowsupdate\.com)/[^'`""]+)"
+    # Extract Microsoft download URLs.
+    $pattern = 'https?://[^"''\s<>]+'
 
     $matches = [regex]::Matches(
         $content,
@@ -156,14 +151,29 @@ function Get-CatalogDownloadUrls {
     $urls = @()
 
     foreach ($match in $matches) {
-        $url = $match.Groups[1].Value
 
-        # Strip HTML encoding / trailing markup.
-        $url = $url.Replace("&amp;", "&")
-        $url = $url.TrimEnd("'", '"', ")", ";")
+        $url = $match.Value
 
-        if ($urls -notcontains $url) {
-            $urls += $url
+        $url = $url.Replace(
+            '&amp;',
+            '&'
+        )
+
+        $url = $url.TrimEnd(
+            "'",
+            '"',
+            ')',
+            ';'
+        )
+
+        if (
+            $url -match 'download\.windowsupdate\.com' -or
+            $url -match 'delivery\.mp\.microsoft\.com' -or
+            $url -match 'windowsupdate\.com'
+        ) {
+            if ($urls -notcontains $url) {
+                $urls += $url
+            }
         }
     }
 
@@ -173,7 +183,6 @@ function Get-CatalogDownloadUrls {
 
     return $urls
 }
-
 function Get-FileNameFromUrl {
     param(
         [Parameter(Mandatory = $true)]
