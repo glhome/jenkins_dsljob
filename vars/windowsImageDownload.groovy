@@ -5,7 +5,7 @@ def call(Map cfg = [:]) {
     if (!baseIsoUrl) error 'baseIsoUrl is required'
 
     def script = libraryResource('scripts/windows-image/download.ps1')
-    def scriptPath = "${env.WORKSPACE}\download-windows-image.ps1"
+    def scriptPath = "${env.WORKSPACE}/download-windows-image.ps1"
     writeFile file: scriptPath, text: script
 
     def args = ["-WorkRoot '${workRoot}'", "-BaseIsoUrl '${baseIsoUrl}'"]
