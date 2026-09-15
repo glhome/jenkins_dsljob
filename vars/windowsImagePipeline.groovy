@@ -47,7 +47,6 @@ def call(Map cfg = [:]) {
             windowsImageService(
                 workRoot: workRoot,
                 imageIndex: imageIndex,
-                resolvedUpdates: "${workRoot}\\download\\updates"
             )
         }
 
