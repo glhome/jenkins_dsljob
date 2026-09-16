@@ -49,7 +49,7 @@ function Invoke-Dism {
 
     Write-Host ''
     Write-Host "DISM: $Operation"
-    Write-Host "Arguments:"
+    Write-Host 'Arguments:'
 
     foreach ($arg in $Arguments) {
         Write-Host "  [$arg]"
@@ -65,7 +65,6 @@ function Invoke-Dism {
 
     Write-Host "DISM completed: $Operation"
 }
-
 # ============================================================
 # 1. Administrator check
 # ============================================================
@@ -456,11 +455,9 @@ try {
         }
 
         $dismArgs = @(
-            '/Image'
-            $MountDir
+            "/Image:$MountDir"
             '/Add-Package'
-            '/PackagePath'
-            $package
+            "/PackagePath:$package"
             '/NoRestart'
         )
 
@@ -468,6 +465,7 @@ try {
             -Operation "Apply $($update.fileName)" `
             -Arguments $dismArgs
     }
+    
     # ========================================================
     # 14. Component cleanup
     # ========================================================
