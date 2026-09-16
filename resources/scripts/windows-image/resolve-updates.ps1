@@ -659,7 +659,7 @@ $html = Get-CatalogPage `
     -Query $query
 
 # ------------------------------------------------------------
-# Parse Catalog rows.
+# Parse Catalog rows
 # ------------------------------------------------------------
 
 $rows = [regex]::Matches(
@@ -681,6 +681,10 @@ foreach ($rowMatch in $rows) {
     $plain = $plain -replace '\s+', ' '
     $plain = $plain.Trim()
 
+    # --------------------------------------------------------
+    # Windows 11 24H2
+    # --------------------------------------------------------
+
     if ($plain -notmatch '(?i)Windows 11') {
         continue
     }
@@ -689,6 +693,10 @@ foreach ($rowMatch in $rows) {
         continue
     }
 
+    # --------------------------------------------------------
+    # Cumulative security update
+    # --------------------------------------------------------
+
     if ($plain -notmatch '(?i)Cumulative Update') {
         continue
     }
@@ -696,6 +704,10 @@ foreach ($rowMatch in $rows) {
     if ($plain -notmatch '(?i)Security Updates') {
         continue
     }
+
+    # --------------------------------------------------------
+    # Architecture
+    # --------------------------------------------------------
 
     if ($Architecture -eq "x64") {
 
@@ -714,15 +726,19 @@ foreach ($rowMatch in $rows) {
         }
     }
 
+    # --------------------------------------------------------
+    # Exclude preview / .NET / dynamic / server
+    # --------------------------------------------------------
+
+    if ($plain -match '(?i)Preview') {
+        continue
+    }
+
     if ($plain -match '(?i)\.NET') {
         continue
     }
 
     if ($plain -match '(?i)Dynamic Update') {
-        continue
-    }
-
-    if ($plain -match '(?i)Preview') {
         continue
     }
 
@@ -772,129 +788,62 @@ foreach ($rowMatch in $rows) {
     if ($dateMatch.Success) {
 
         try {
-
             $date = [datetime]::Parse(
                 $dateMatch.Groups[1].Value
             )
         }
         catch {
-
             $date = [datetime]::MinValue
         }
     }
     else {
-
         $date = [datetime]::MinValue
     }
 
-    # --------------------------------------------------------
-    # UpdateID
-    #
-    # Only accept a GUID from this exact row.
-    # --------------------------------------------------------
-
-    $guidMatches = [regex]::Matches(
-        $row,
-        '(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
-    )
-
-    if ($guidMatches.Count -eq 0) {
-        continue
-    }
-
-    $updateId = $null
-
-    foreach ($guidMatch in $guidMatches) {
-
-        $guid = $guidMatch.Groups[1].Value
-
-        $start = [Math]::Max(
-            0,
-            $guidMatch.Index - 500
-        )
-
-        $length = [Math]::Min(
-            1000,
-            $row.Length - $start
-        )
-
-        $context = $row.Substring(
-            $start,
-            $length
-        )
-
-        if (
-            $context -match '(?i)updateID' -or
-            $context -match '(?i)updateId' -or
-            $context -match '(?i)uidInfo'
-        ) {
-
-            $updateId = $guid
-
-            break
-        }
-    }
-
-    # If there is exactly one GUID in the row,
-    # use it.
-
-    if (
-        !$updateId -and
-        $guidMatches.Count -eq 1
-    ) {
-
-        $updateId = $guidMatches[0].Groups[1].Value
-    }
-
-    if (!$updateId) {
-
-        Write-Warning `
-            "Skipping KB $kb because UpdateID could not be unambiguously determined."
-
-        continue
-    }
-
     $candidates += [pscustomobject]@{
-        KB       = $kb
-        Build    = $build
-        Date     = $date
-        UpdateId = $updateId
-        Title    = $plain
+        KB    = $kb
+        Build = $build
+        Date  = $date
+        Title = $plain
     }
 }
 
 # ------------------------------------------------------------
-# Remove duplicate KB/UpdateID combinations.
+# Remove duplicate KBs
 # ------------------------------------------------------------
 
 $candidates = @(
     $candidates |
-        Sort-Object KB, UpdateId -Unique
+        Sort-Object KB, Date -Unique
 )
 
 if ($candidates.Count -eq 0) {
 
-    throw `
-        "Could not find a Windows 11 24H2 $Architecture LCU in Microsoft Update Catalog."
+    throw @"
+Could not find a Windows 11 24H2 $Architecture LCU
+in Microsoft Update Catalog.
+
+Search:
+$query
+"@
 }
 
 Write-Host ""
-Write-Host "Catalog candidates found: $($candidates.Count)"
+Write-Host "Catalog candidates:"
 Write-Host ""
 
 foreach ($candidate in $candidates) {
 
     Write-Host (
-        "  {0} | {1} | {2} | {3}" -f
+        "  {0} | {1} | {2}" -f
         $candidate.KB,
         $candidate.Build,
-        $candidate.Date.ToString("yyyy-MM-dd"),
-        $candidate.UpdateId
+        $candidate.Date.ToString("yyyy-MM-dd")
     )
 }
 
 # ------------------------------------------------------------
-# Select newest release.
+# Select newest candidate
 # ------------------------------------------------------------
 
 $selected = $candidates |
@@ -921,8 +870,319 @@ Write-Host "============================================================"
 Write-Host "KB       : $($selected.KB)"
 Write-Host "Build    : $($selected.Build)"
 Write-Host "Date     : $($selected.Date.ToString('yyyy-MM-dd'))"
-Write-Host "UpdateID : $($selected.UpdateId)"
 Write-Host "Title    : $($selected.Title)"
+Write-Host ""
+
+# ------------------------------------------------------------
+# IMPORTANT:
+#
+# Now search Microsoft Catalog specifically for the selected KB.
+#
+# This gives us a much smaller and more deterministic page from
+# which to obtain the correct UpdateID.
+# ------------------------------------------------------------
+
+$kbQuery = $selected.KB
+
+Write-Host "Resolving UpdateID for:"
+Write-Host "  $kbQuery"
+
+$kbHtml = Get-CatalogPage `
+    -Query $kbQuery
+
+# ------------------------------------------------------------
+# Find the selected KB row.
+# ------------------------------------------------------------
+
+$kbRows = [regex]::Matches(
+    $kbHtml,
+    '<tr[^>]*>(.*?)</tr>',
+    [System.Text.RegularExpressions.RegexOptions]::Singleline
+)
+
+$matchingRows = @()
+
+foreach ($kbRowMatch in $kbRows) {
+
+    $kbRow = $kbRowMatch.Groups[1].Value
+
+    $kbPlain = [System.Net.WebUtility]::HtmlDecode(
+        ($kbRow -replace '<[^>]+>', ' ')
+    )
+
+    $kbPlain = $kbPlain -replace '\s+', ' '
+    $kbPlain = $kbPlain.Trim()
+
+    if ($kbPlain -notmatch [regex]::Escape($selected.KB)) {
+        continue
+    }
+
+    if ($kbPlain -notmatch '(?i)Windows 11') {
+        continue
+    }
+
+    if ($kbPlain -notmatch '(?i)version 24H2') {
+        continue
+    }
+
+    if ($kbPlain -notmatch '(?i)Cumulative Update') {
+        continue
+    }
+
+    if ($kbPlain -match '(?i)Preview') {
+        continue
+    }
+
+    if ($kbPlain -match '(?i)\.NET') {
+        continue
+    }
+
+    if ($Architecture -eq "x64") {
+
+        if ($kbPlain -notmatch '(?i)x64-based Systems') {
+            continue
+        }
+
+        if ($kbPlain -match '(?i)ARM64') {
+            continue
+        }
+    }
+
+    $matchingRows += [pscustomobject]@{
+        Row   = $kbRow
+        Plain = $kbPlain
+    }
+}
+
+if ($matchingRows.Count -eq 0) {
+
+    throw @"
+Could not find a matching Microsoft Catalog row for:
+
+KB:
+  $($selected.KB)
+
+Architecture:
+  $Architecture
+"@
+}
+
+Write-Host ""
+Write-Host "Matching KB rows: $($matchingRows.Count)"
+
+# ------------------------------------------------------------
+# Extract UpdateID from the selected KB page.
+#
+# The Catalog page normally exposes the GUID in attributes,
+# JavaScript handlers, or input elements.
+# ------------------------------------------------------------
+
+$updateIds = @()
+
+foreach ($match in $matchingRows) {
+
+    $row = $match.Row
+
+    # GUIDs in the row.
+    $guidMatches = [regex]::Matches(
+        $row,
+        '(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+    )
+
+    foreach ($guidMatch in $guidMatches) {
+
+        $guid = $guidMatch.Groups[1].Value
+
+        if ($updateIds -notcontains $guid) {
+            $updateIds += $guid
+        }
+    }
+}
+
+# ------------------------------------------------------------
+# If the row itself does not expose the GUID, search the entire
+# selected-KB page for Catalog update IDs.
+# ------------------------------------------------------------
+
+if ($updateIds.Count -eq 0) {
+
+    $allGuidMatches = [regex]::Matches(
+        $kbHtml,
+        '(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+    )
+
+    foreach ($guidMatch in $allGuidMatches) {
+
+        $guid = $guidMatch.Groups[1].Value
+
+        if ($updateIds -notcontains $guid) {
+            $updateIds += $guid
+        }
+    }
+}
+
+if ($updateIds.Count -eq 0) {
+
+    throw @"
+    Could not resolve UpdateID for $($selected.KB).
+
+    Microsoft Catalog returned the KB, but no UpdateID GUID
+    could be extracted.
+
+    Catalog:
+    $(Get-CatalogSearchUrl -Query $kbQuery)
+    "@
+    }
+
+    Write-Host ""
+    Write-Host "UpdateIDs found for $($selected.KB):"
+
+    foreach ($id in $updateIds) {
+        Write-Host "  $id"
+}
+
+# ------------------------------------------------------------
+# Determine which UpdateID actually returns an MSU matching
+# the selected KB and architecture.
+#
+# This is the final protection against the previous problem:
+#
+# KB5129195
+#      ↓
+# wrong UpdateID
+#      ↓
+# KB5043080.msu
+#
+# We reject that combination.
+# ------------------------------------------------------------
+
+$selectedUpdateId = $null
+$downloadUrl = $null
+$fileName = $null
+
+foreach ($updateId in $updateIds) {
+
+    Write-Host ""
+    Write-Host "Testing UpdateID:"
+    Write-Host "  $updateId"
+
+    try {
+
+        $urls = Get-CatalogDownloadUrls `
+            -UpdateId $updateId
+
+        foreach ($url in $urls) {
+
+            try {
+
+                $candidateFileName = Get-FileNameFromUrl `
+                    -Url $url
+
+                Write-Host "  Candidate:"
+                Write-Host "    $candidateFileName"
+
+                if (
+                    $candidateFileName -notmatch '(?i)\.msu$'
+                ) {
+                    Write-Host "    Rejected: not MSU."
+                    continue
+                }
+
+                if (!(Test-MsuFileNameMatchesKb `
+                    -FileName $candidateFileName `
+                    -Kb $selected.KB)) {
+
+                    Write-Host `
+                        "    Rejected: KB does not match $($selected.KB)."
+
+                    continue
+                }
+
+                if (
+                    $Architecture -eq "x64" -and
+                    $candidateFileName -notmatch '(?i)(x64|amd64)'
+                ) {
+
+                    Write-Host `
+                        "    Rejected: architecture does not match x64."
+
+                    continue
+                }
+
+                if (
+                    $Architecture -eq "arm64" -and
+                    $candidateFileName -notmatch '(?i)arm64'
+                ) {
+
+                    Write-Host `
+                        "    Rejected: architecture does not match arm64."
+
+                    continue
+                }
+
+                $selectedUpdateId = $updateId
+                $downloadUrl = $url
+                $fileName = $candidateFileName
+
+                Write-Host "    ACCEPTED"
+
+                break
+            }
+            catch {
+
+                Write-Host `
+                    "    Rejected: $($_.Exception.Message)"
+            }
+        }
+
+        if ($selectedUpdateId) {
+            break
+        }
+    }
+    catch {
+
+        Write-Host `
+            "  UpdateID failed: $($_.Exception.Message)"
+    }
+}
+
+if (!$selectedUpdateId) {
+
+    throw @"
+Could not find a Microsoft Update Catalog UpdateID whose
+download matches the selected update.
+
+Selected KB:
+  $($selected.KB)
+
+Architecture:
+  $Architecture
+
+The resolver intentionally refuses to continue because
+the KB and downloaded MSU could not be correlated safely.
+"@
+}
+
+# ------------------------------------------------------------
+# Save resolved UpdateID back to selected object
+# ------------------------------------------------------------
+
+$selected | Add-Member `
+    -MemberType NoteProperty `
+    -Name UpdateId `
+    -Value $selectedUpdateId `
+    -Force
+
+Write-Host ""
+Write-Host "============================================================"
+Write-Host " Resolved Microsoft Update"
+Write-Host "============================================================"
+Write-Host "KB       : $($selected.KB)"
+Write-Host "Build    : $($selected.Build)"
+Write-Host "Date     : $($selected.Date.ToString('yyyy-MM-dd'))"
+Write-Host "UpdateID : $selectedUpdateId"
+Write-Host "File     : $fileName"
+Write-Host "URL      : $downloadUrl"
 Write-Host ""
 
 # ------------------------------------------------------------
