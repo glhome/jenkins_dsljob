@@ -13,7 +13,7 @@ def call(Map cfg = [:]) {
 
     node(agentLabel) {
 
-        def workRoot = "${env.WORKSPACE}\\windows-image"
+        def workRoot = "${env.WORKSPACE}"
 
         echo "Workspace: ${env.WORKSPACE}"
         echo "Work root: ${workRoot}"
