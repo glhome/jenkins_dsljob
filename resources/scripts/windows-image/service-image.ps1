@@ -41,21 +41,26 @@ Write-Host ''
 function Invoke-Dism {
     param(
         [Parameter(Mandatory = $true)]
-        [string[]]$Arguments,
+        [string]$Operation,
 
         [Parameter(Mandatory = $true)]
-        [string]$Operation
+        [string[]]$Arguments
     )
 
     Write-Host ''
     Write-Host "DISM: $Operation"
+    Write-Host "Arguments:"
 
-    & dism.exe @Arguments
+    foreach ($arg in $Arguments) {
+        Write-Host "  [$arg]"
+    }
+
+    & "$env:SystemRoot\System32\dism.exe" @Arguments
 
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -ne 0) {
-        throw "DISM failed during '$Operation'. Exit code: 0x{0:X8}" -f $exitCode
+        throw "DISM failed during '$Operation'. Exit code: $exitCode"
     }
 
     Write-Host "DISM completed: $Operation"
@@ -443,18 +448,26 @@ try {
         Write-Host "Applying update: $($update.fileName)"
         Write-Host "Type           : $($update.type)"
         Write-Host "KB             : $($update.kb)"
+        Write-Host "Package        : $package"
         Write-Host '------------------------------------------------------------'
+
+        if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
+            throw "Update package not found: $package"
+        }
+
+        $dismArgs = @(
+            '/Image'
+            $MountDir
+            '/Add-Package'
+            '/PackagePath'
+            $package
+            '/NoRestart'
+        )
 
         Invoke-Dism `
             -Operation "Apply $($update.fileName)" `
-            -Arguments @(
-                '/Image:' + $MountDir,
-                '/Add-Package',
-                '/PackagePath:' + $package,
-                '/NoRestart'
-            )
+            -Arguments $dismArgs
     }
-
     # ========================================================
     # 14. Component cleanup
     # ========================================================
