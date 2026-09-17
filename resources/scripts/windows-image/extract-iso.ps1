@@ -1,25 +1,147 @@
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$WorkRoot,[int]$ImageIndex=1)
-$ErrorActionPreference="Stop"
-$isoPath=Join-Path $WorkRoot "download\base.iso"
-$sourceRoot=Join-Path $WorkRoot "source"
-$mountRoot=Join-Path $WorkRoot "mount"
-$installWim=Join-Path $sourceRoot "sources\install.wim"
-$installEsd=Join-Path $sourceRoot "sources\install.esd"
-if (-not (Test-Path $isoPath)) { throw "Base ISO not found: $isoPath" }
-if (Test-Path $sourceRoot) { Remove-Item $sourceRoot -Recurse -Force }
-New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
-Mount-DiskImage -ImagePath $isoPath -StorageType ISO -PassThru | Out-Null
-try {
- $volume=Get-DiskImage -ImagePath $isoPath | Get-Volume | Where-Object DriveLetter | Select-Object -First 1
- if (-not $volume) { throw "Unable to find mounted ISO drive." }
- $drive="$($volume.DriveLetter):"
- $p=Start-Process robocopy.exe -ArgumentList @("$drive\","$sourceRoot","/E","/COPY:DAT","/DCOPY:DAT","/R:2","/W:2") -Wait -PassThru -NoNewWindow
- if ($p.ExitCode -gt 7) { throw "Robocopy failed with exit code $($p.ExitCode)." }
-} finally { Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue }
-if (Test-Path $installEsd) { throw "The ISO contains install.esd. This pipeline currently expects install.wim." }
-if (-not (Test-Path $installWim)) { throw "install.wim was not found." }
-New-Item -ItemType Directory -Path $mountRoot -Force | Out-Null
-& dism.exe /Get-WimInfo /WimFile:$installWim | Tee-Object -FilePath (Join-Path $mountRoot "image-info.txt")
-if ($LASTEXITCODE -ne 0) { throw "DISM /Get-WimInfo failed." }
-New-Item -ItemType Directory -Path (Join-Path $mountRoot "install") -Force | Out-Null
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$WorkRoot,
+
+    [Parameter(Mandatory = $false)]
+    [int]$ImageIndex = 1
+)
+
+$ErrorActionPreference = 'Stop'
+
+$WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
+
+$SourceDir = Join-Path $WorkRoot 'source'
+$MountDir  = Join-Path $WorkRoot 'mount\install'
+
+$BaseIso = Join-Path $WorkRoot 'download\base.iso'
+$WimFile = Join-Path $SourceDir 'sources\install.wim'
+
+Write-Host ""
+Write-Host "============================================================"
+Write-Host " Extract Windows Image"
+Write-Host "============================================================"
+Write-Host "WorkRoot:"
+Write-Host "  $WorkRoot"
+Write-Host ""
+Write-Host "Base ISO:"
+Write-Host "  $BaseIso"
+Write-Host ""
+Write-Host "Source:"
+Write-Host "  $SourceDir"
+Write-Host "============================================================"
+
+if (-not (Test-Path -LiteralPath $BaseIso)) {
+    throw "Base ISO not found: $BaseIso"
+}
+
+New-Item `
+    -ItemType Directory `
+    -Force `
+    -Path $SourceDir | Out-Null
+
+# ------------------------------------------------------------
+# Mount ISO
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Mounting ISO..."
+
+$diskImage = Mount-DiskImage `
+    -ImagePath $BaseIso `
+    -PassThru
+
+Start-Sleep -Seconds 2
+
+$volume = $diskImage |
+    Get-Volume |
+    Select-Object -First 1
+
+if (-not $volume) {
+    throw "Unable to determine mounted ISO volume."
+}
+
+$isoDrive = "$($volume.DriveLetter):"
+
+Write-Host "ISO mounted at:"
+Write-Host "  $isoDrive"
+
+# ------------------------------------------------------------
+# Copy ISO contents
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Copying ISO contents..."
+
+robocopy `
+    "$isoDrive\" `
+    $SourceDir `
+    /E `
+    /COPY:DAT `
+    /R:2 `
+    /W:2 `
+    /NFL `
+    /NDL
+
+$robocopyCode = $LASTEXITCODE
+
+if ($robocopyCode -ge 8) {
+    throw "Robocopy failed with exit code $robocopyCode."
+}
+
+# ------------------------------------------------------------
+# Dismount ISO
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Dismounting ISO..."
+
+Dismount-DiskImage `
+    -ImagePath $BaseIso
+
+# ------------------------------------------------------------
+# Verify WIM
+# ------------------------------------------------------------
+
+$WimFile = Join-Path $SourceDir 'sources\install.wim'
+
+if (-not (Test-Path -LiteralPath $WimFile)) {
+
+    $EsdFile = Join-Path $SourceDir 'sources\install.esd'
+
+    if (Test-Path -LiteralPath $EsdFile) {
+
+        Write-Host "install.esd detected."
+
+        throw @"
+The ISO contains install.esd instead of install.wim.
+
+The current image factory expects install.wim.
+Convert install.esd to install.wim before continuing.
+"@
+    }
+
+    throw "install.wim not found: $WimFile"
+}
+
+# ------------------------------------------------------------
+# Display image information
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Windows image information:"
+
+& dism.exe `
+    /English `
+    /Get-WimInfo `
+    "/WimFile:$WimFile"
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to inspect install.wim."
+}
+
+Write-Host ""
+Write-Host "Extraction completed successfully."
+Write-Host "WIM:"
+Write-Host "  $WimFile"
+Write-Host "============================================================"

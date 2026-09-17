@@ -11,14 +11,26 @@ def call(Map cfg = [:]) {
         'scripts/windows-image/service-image.ps1'
     )
 
+    def scriptPath =
+        "${env.WORKSPACE}\\service-windows-image.ps1"
+
     writeFile(
-        file: 'service-image.ps1',
+        file: scriptPath,
         text: script
     )
 
-    powershell """
-        & '${env.WORKSPACE}\\service-image.ps1' `
-            -WorkRoot '${workRoot}' `
-            -ImageIndex ${imageIndex}
-    """
+    echo "Service WorkRoot: ${workRoot}"
+
+    powershell(
+        '''
+$ErrorActionPreference = 'Stop'
+
+& '__SCRIPT_PATH__' `
+    -WorkRoot '__WORK_ROOT__' `
+    -ImageIndex __IMAGE_INDEX__
+'''
+        .replace('__SCRIPT_PATH__', scriptPath)
+        .replace('__WORK_ROOT__', workRoot)
+        .replace('__IMAGE_INDEX__', imageIndex.toString())
+    )
 }

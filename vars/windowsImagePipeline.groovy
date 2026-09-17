@@ -1,79 +1,137 @@
 def call(Map cfg = [:]) {
-    def baseIsoPath = cfg.baseIsoPath ?: ''
-    def baseIsoSha256 = cfg.baseIsoSha256 ?: ''
-    def windowsBuild = cfg.windowsBuild ?: '26100'
-    def architecture = cfg.architecture ?: 'x64'
-    def imageIndex = cfg.imageIndex ?: 1
-    def outputName = cfg.outputName ?: 'Windows-Custom'
-    def agentLabel = cfg.agentLabel ?: 'windows-image-builder'
 
-    if (!baseIsoPath.trim()) {
+    def baseIsoPath       = cfg.baseIsoPath
+    def baseIsoSha256     = cfg.baseIsoSha256 ?: ''
+    def windowsBuild      = cfg.windowsBuild ?: '26100'
+    def architecture      = cfg.architecture ?: 'x64'
+    def updateManifestUrl = cfg.updateManifestUrl ?: ''
+    def updateManifestFile = cfg.updateManifestFile ?: ''
+    def artifactoryBaseUrl = cfg.artifactoryBaseUrl ?: ''
+    def artifactoryRepo   = cfg.artifactoryRepo ?: 'windows-updates'
+    def imageIndex        = cfg.imageIndex ?: 1
+    def outputName        = cfg.outputName ?: 'Windows-Custom'
+    def agentLabel        = cfg.agentLabel ?: 'windows-image-builder'
+    def keepWorkspace     = cfg.keepWorkspace ?: false
+
+    if (!baseIsoPath?.trim()) {
         error 'baseIsoPath is required'
     }
 
     node(agentLabel) {
 
-        def workRoot = "${env.WORKSPACE}"
+        // IMPORTANT:
+        // WorkRoot is the Jenkins workspace itself.
+        // Do NOT append \\windows-image here.
+        def workRoot = env.WORKSPACE
 
-        echo "Workspace: ${env.WORKSPACE}"
-        echo "Work root: ${workRoot}"
-        echo "Base ISO: ${baseIsoPath}"
+        echo """
+============================================================
+ Windows Image Factory
+============================================================
+ Agent:
+   ${env.NODE_NAME}
 
-        stage('Prepare') {
-            windowsImagePrepare(
-                workRoot: workRoot,
-                baseIsoPath: baseIsoPath
-            )
+ Workspace:
+   ${env.WORKSPACE}
+
+ WorkRoot:
+   ${workRoot}
+
+ Base ISO:
+   ${baseIsoPath}
+
+ Windows Build:
+   ${windowsBuild}
+
+ Architecture:
+   ${architecture}
+
+ Artifactory:
+   ${artifactoryBaseUrl}
+
+ Repository:
+   ${artifactoryRepo}
+
+ Image Index:
+   ${imageIndex}
+
+ Output:
+   ${outputName}
+============================================================
+"""
+
+        try {
+
+            stage('Prepare') {
+
+                windowsImagePrepare(
+                    workRoot: workRoot
+                )
+            }
+
+            stage('Download Base ISO and Updates') {
+
+                windowsImageDownload(
+                    workRoot: workRoot,
+                    baseIsoPath: baseIsoPath,
+                    baseIsoSha256: baseIsoSha256,
+                    windowsBuild: windowsBuild,
+                    architecture: architecture,
+                    updateManifestUrl: updateManifestUrl,
+                    updateManifestFile: updateManifestFile,
+                    artifactoryBaseUrl: artifactoryBaseUrl,
+                    artifactoryRepo: artifactoryRepo
+                )
+            }
+
+            stage('Extract Windows Image') {
+
+                windowsImageExtract(
+                    workRoot: workRoot,
+                    imageIndex: imageIndex
+                )
+            }
+
+            stage('Service Windows Image') {
+
+                windowsImageService(
+                    workRoot: workRoot,
+                    imageIndex: imageIndex
+                )
+            }
+
+            stage('Create ISO') {
+
+                windowsImageCreateIso(
+                    workRoot: workRoot,
+                    outputName: outputName
+                )
+            }
+
+            stage('Generate Manifest') {
+
+                windowsImageManifest(
+                    workRoot: workRoot,
+                    outputName: outputName
+                )
+            }
+
         }
+        finally {
 
-        stage('Download') {
-            windowsImageDownload(
-                workRoot: workRoot,
-                baseIsoPath: baseIsoPath,
-                baseIsoSha256: baseIsoSha256,
-                windowsBuild: windowsBuild,
-                architecture: architecture
-            )
-        }
+            if (!keepWorkspace) {
 
-        stage('Extract ISO') {
-            windowsImageExtract(
-                workRoot: workRoot,
-                imageIndex: imageIndex
-            )
-        }
+                echo "Workspace cleanup is enabled."
 
-        stage('Service Windows Image') {
-            windowsImageService(
-                workRoot: workRoot,
-                imageIndex: imageIndex,
-            )
-        }
+                // Do not blindly delete the workspace here.
+                // The service script is responsible for DISM cleanup.
+                // Jenkins Workspace Cleanup can be added separately.
+            }
+            else {
 
-        stage('Create ISO') {
-            windowsImageCreateIso(
-                workRoot: workRoot,
-                outputName: outputName
-            )
-        }
-
-        stage('Generate Manifest') {
-            windowsImageManifest(
-                workRoot: workRoot,
-                outputName: outputName,
-                imageIndex: imageIndex,
-                baseIsoPath: baseIsoPath,
-                baseIsoSha256: baseIsoSha256,
-                windowsBuild: windowsBuild,
-                architecture: architecture
-            )
-        }
-
-        stage('Archive Artifacts') {
-            archiveArtifacts(
-                artifacts: 'windows-image/output/*.iso,windows-image/output/*.sha256,windows-image/output/manifest.json',
-                fingerprint: true
-            )
+                echo "KEEP_WORKSPACE=true - preserving:"
+                echo workRoot
+            }
         }
     }
 }

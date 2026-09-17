@@ -11,12 +11,15 @@ def call(Map cfg = [:]) {
         'scripts/windows-image/extract-iso.ps1'
     )
 
-    def scriptPath = "${env.WORKSPACE}\\extract-windows-image.ps1"
+    def scriptPath =
+        "${env.WORKSPACE}\\extract-windows-image.ps1"
 
     writeFile(
         file: scriptPath,
         text: script
     )
+
+    echo "Extract WorkRoot: ${workRoot}"
 
     powershell(
         '''

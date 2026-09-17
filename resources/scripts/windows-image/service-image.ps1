@@ -3,157 +3,100 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$WorkRoot,
 
+    [Parameter(Mandatory = $false)]
     [int]$ImageIndex = 1
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 
 # ============================================================
-# Normalize WorkRoot
+# Service Windows Image
 # ============================================================
-
-$WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
-
-$SourceDir   = Join-Path $WorkRoot "source"
-$MountDir    = Join-Path $WorkRoot "mount\install"
-$DownloadDir = Join-Path $WorkRoot "download"
-$UpdatesDir  = Join-Path $DownloadDir "updates"
-$ResolvedFile = Join-Path $DownloadDir "resolved-updates.json"
-$WimFile     = Join-Path $SourceDir "sources\install.wim"
-
-$DismExe = Join-Path $env:SystemRoot "System32\dism.exe"
 
 Write-Host ""
 Write-Host "============================================================"
 Write-Host " Service Windows Image"
 Write-Host "============================================================"
+
+# ------------------------------------------------------------
+# Normalize paths
+# ------------------------------------------------------------
+
+$WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
+
+$SourceDir   = Join-Path $WorkRoot 'source'
+$MountDir    = Join-Path $WorkRoot 'mount\install'
+$DownloadDir = Join-Path $WorkRoot 'download'
+$UpdatesDir  = Join-Path $DownloadDir 'updates'
+$ResolvedFile = Join-Path $DownloadDir 'resolved-updates.json'
+$WimFile     = Join-Path $SourceDir 'sources\install.wim'
+
 Write-Host "WorkRoot:"
 Write-Host "  $WorkRoot"
-Write-Host ""
+
 Write-Host "WIM:"
 Write-Host "  $WimFile"
-Write-Host ""
+
 Write-Host "Mount:"
 Write-Host "  $MountDir"
-Write-Host ""
+
 Write-Host "Updates:"
 Write-Host "  $UpdatesDir"
-Write-Host ""
+
 Write-Host "Manifest:"
 Write-Host "  $ResolvedFile"
+
 Write-Host "============================================================"
+
+# ------------------------------------------------------------
+# Administrator check
+# ------------------------------------------------------------
+
+$currentIdentity =
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+
+$currentPrincipal =
+    New-Object Security.Principal.WindowsPrincipal($currentIdentity)
+
+$isAdmin =
+    $currentPrincipal.IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )
+
 Write-Host ""
-
-# ============================================================
-# Validation
-# ============================================================
-
-if (!(Test-Path -LiteralPath $DismExe -PathType Leaf)) {
-    throw "DISM not found: $DismExe"
-}
-
-if (!(Test-Path -LiteralPath $WimFile -PathType Leaf)) {
-    throw "install.wim not found: $WimFile"
-}
-
-if (!(Test-Path -LiteralPath $ResolvedFile -PathType Leaf)) {
-    throw "Resolved update manifest not found: $ResolvedFile"
-}
-
-if (!(Test-Path -LiteralPath $UpdatesDir -PathType Container)) {
-    throw "Updates directory not found: $UpdatesDir"
-}
-
-# ============================================================
-# Verify administrator privileges
-# ============================================================
-
-$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-
-$principal = New-Object `
-    Security.Principal.WindowsPrincipal($currentIdentity)
-
-$isAdmin = $principal.IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator
-)
-
-if (!$isAdmin) {
-    throw "Jenkins agent is not running with Administrator privileges."
-}
-
 Write-Host "Running as:"
 Write-Host "  $($currentIdentity.Name)"
 
-# ============================================================
-# Create mount directory
-# ============================================================
+if (-not $isAdmin) {
+    throw "DISM servicing requires Administrator privileges."
+}
+
+# ------------------------------------------------------------
+# Validate files/directories
+# ------------------------------------------------------------
+
+if (-not (Test-Path -LiteralPath $WimFile)) {
+    throw "install.wim not found: $WimFile"
+}
+
+if (-not (Test-Path -LiteralPath $UpdatesDir)) {
+    throw "Updates directory not found: $UpdatesDir"
+}
+
+if (-not (Test-Path -LiteralPath $ResolvedFile)) {
+    throw "resolved-updates.json not found: $ResolvedFile"
+}
 
 New-Item `
     -ItemType Directory `
     -Force `
-    -Path $MountDir |
-    Out-Null
+    -Path $MountDir | Out-Null
 
-# ============================================================
-# Check for existing mounted images
-# ============================================================
-
-Write-Host ""
-Write-Host "Checking for existing DISM mounts..."
-
-& $DismExe /Get-MountedWimInfo
-
-$mountedCheckExitCode = $LASTEXITCODE
-
-if ($mountedCheckExitCode -ne 0) {
-    Write-Warning "DISM /Get-MountedWimInfo returned $mountedCheckExitCode"
-}
-
-# ============================================================
-# Load resolved updates
-# ============================================================
-
-Write-Host ""
-Write-Host "Loading resolved update manifest..."
-
-$updates = @(
-    Get-Content `
-        -LiteralPath $ResolvedFile `
-        -Raw |
-    ConvertFrom-Json
-)
-
-if ($updates.Count -eq 0) {
-    throw "Resolved update manifest contains no updates."
-}
-
-Write-Host ""
-Write-Host "Resolved updates:"
-Write-Host ""
-
-foreach ($update in $updates) {
-
-    Write-Host "  Type : $($update.type)"
-    Write-Host "  KB   : $($update.kb)"
-    Write-Host "  File : $($update.fileName)"
-    Write-Host ""
-}
-
-# ============================================================
+# ------------------------------------------------------------
 # DISM helper
-#
-# IMPORTANT:
-# DISM requires arguments such as:
-#
-#   /Image:C:\mount
-#   /PackagePath:C:\foo.msu
-#
-# They must NOT be split into:
-#
-#   /Image
-#   C:\mount
-#
-# ============================================================
+# ------------------------------------------------------------
+
+$DismExe = "$env:SystemRoot\System32\dism.exe"
 
 function Invoke-DismCommand {
 
@@ -166,135 +109,157 @@ function Invoke-DismCommand {
     )
 
     Write-Host ""
-    Write-Host "============================================================"
-    Write-Host " DISM: $Operation"
-    Write-Host "============================================================"
+    Write-Host "------------------------------------------------------------"
+    Write-Host "DISM: $Operation"
+    Write-Host "------------------------------------------------------------"
 
     Write-Host "Command:"
     Write-Host "  $DismExe"
 
-    Write-Host ""
-    Write-Host "Arguments:"
+    foreach ($arg in $Arguments) {
+        Write-Host "  $arg"
+    }
 
-    foreach ($argument in $Arguments) {
-        Write-Host "  [$argument]"
+    & $DismExe @Arguments
+
+    if ($LASTEXITCODE -ne 0) {
+
+        $exitCode = $LASTEXITCODE
+
+        throw `
+            "DISM operation '$Operation' failed with exit code $exitCode."
     }
 
     Write-Host ""
+    Write-Host "DISM operation completed successfully."
+}
 
-    # IMPORTANT:
-    # PowerShell splatting passes every array element as a
-    # separate command-line argument while preserving the
-    # required DISM /Switch:value format.
-    & $DismExe @Arguments
+# ------------------------------------------------------------
+# Check existing mounts
+# ------------------------------------------------------------
 
-    $exitCode = $LASTEXITCODE
+Write-Host ""
+Write-Host "Checking for existing DISM mounts..."
+
+$dismInfo = & $DismExe /English /Get-MountedWimInfo 2>&1
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to query mounted WIM information."
+}
+
+$dismText = $dismInfo -join "`n"
+
+Write-Host $dismText
+
+# ------------------------------------------------------------
+# If this workspace is already mounted, clean it
+# ------------------------------------------------------------
+
+if ($dismText -match [regex]::Escape($MountDir)) {
 
     Write-Host ""
-    Write-Host "DISM exit code: $exitCode"
+    Write-Host "Existing mount found for current WorkRoot:"
+    Write-Host "  $MountDir"
 
-    if ($exitCode -ne 0) {
-        throw "DISM failed during '$Operation'. Exit code: $exitCode"
+    Write-Host ""
+    Write-Host "Discarding existing mount to guarantee a clean servicing operation..."
+
+    & $DismExe `
+        /Unmount-Wim `
+        /MountDir:$MountDir `
+        /Discard
+
+    if ($LASTEXITCODE -ne 0) {
+
+        Write-Warning "Unmount /Discard failed."
+
+        & $DismExe /Cleanup-Wim
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to clean existing WIM mount."
+        }
     }
 }
 
-# ============================================================
-# Mount WIM
-# ============================================================
+# ------------------------------------------------------------
+# Final cleanup
+# ------------------------------------------------------------
 
-$mounted = $false
+& $DismExe /Cleanup-Wim
 
-try {
+if ($LASTEXITCODE -ne 0) {
+    throw "DISM cleanup failed."
+}
 
+# ------------------------------------------------------------
+# Load update manifest
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Loading update manifest..."
+
+$manifest = Get-Content `
+    -LiteralPath $ResolvedFile `
+    -Raw |
+    ConvertFrom-Json
+
+if (-not $manifest) {
+    throw "Update manifest is empty."
+}
+
+$updates = @($manifest.updates)
+
+if ($updates.Count -eq 0) {
+    throw "No updates found in resolved-updates.json."
+}
+
+Write-Host ""
+Write-Host "Updates selected:"
+foreach ($update in $updates) {
+    Write-Host "  KB:       $($update.kb)"
+    Write-Host "  Build:    $($update.build)"
+    Write-Host "  File:     $($update.fileName)"
+    Write-Host "  SHA256:   $($update.sha256)"
+    Write-Host "  SSU incl: $($update.ssuIncluded)"
     Write-Host ""
-    Write-Host "Mounting WIM..."
-    Write-Host "  WIM:"
-    Write-Host "    $WimFile"
-    Write-Host ""
-    Write-Host "  Index:"
-    Write-Host "    $ImageIndex"
-    Write-Host ""
-    Write-Host "  Mount:"
-    Write-Host "    $MountDir"
+}
 
-    $mountArgs = @(
-        "/Mount-Wim"
-        "/WimFile:$WimFile"
-        "/Index:$ImageIndex"
-        "/MountDir:$MountDir"
-    )
+# ------------------------------------------------------------
+# Verify package files and hashes BEFORE mounting
+# ------------------------------------------------------------
 
-    Invoke-DismCommand `
-        -Operation "Mount WIM" `
-        -Arguments $mountArgs
+foreach ($update in $updates) {
 
-    $mounted = $true
+    if (-not $update.fileName) {
+        throw "Update manifest contains an update without fileName."
+    }
 
-    Write-Host ""
-    Write-Host "WIM mounted successfully."
+    if (-not $update.kb) {
+        throw "Update manifest contains an update without KB."
+    }
 
-    # ========================================================
-    # Apply updates
-    # ========================================================
+    $packagePath =
+        Join-Path $UpdatesDir $update.fileName
 
-    foreach ($update in $updates) {
+    if (-not (Test-Path -LiteralPath $packagePath)) {
+        throw "Update package not found: $packagePath"
+    }
 
-        $packageName = [string]$update.fileName
+    $actualHash =
+        (Get-FileHash `
+            -LiteralPath $packagePath `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
 
-        if ([string]::IsNullOrWhiteSpace($packageName)) {
-            throw "Update manifest contains an empty fileName."
-        }
+    $expectedHash =
+        ([string]$update.sha256).ToLowerInvariant()
 
-        $packagePath = Join-Path `
-            $UpdatesDir `
-            $packageName
+    if ($expectedHash -and $actualHash -ne $expectedHash) {
 
-        if (!(Test-Path -LiteralPath $packagePath -PathType Leaf)) {
-
-            throw @"
-Update package not found.
-
-KB:
-  $($update.kb)
+        throw @"
+SHA256 mismatch for $($update.kb)
 
 File:
-  $packageName
-
-Expected:
   $packagePath
-"@
-        }
-
-        # ----------------------------------------------------
-        # Verify package hash if manifest has one
-        # ----------------------------------------------------
-
-        if (![string]::IsNullOrWhiteSpace([string]$update.sha256)) {
-
-            Write-Host ""
-            Write-Host "Verifying SHA-256:"
-            Write-Host "  $packageName"
-
-            $actualHash = (
-                Get-FileHash `
-                    -LiteralPath $packagePath `
-                    -Algorithm SHA256
-            ).Hash.ToLowerInvariant()
-
-            $expectedHash = (
-                [string]$update.sha256
-            ).ToLowerInvariant()
-
-            Write-Host "  Expected: $expectedHash"
-            Write-Host "  Actual  : $actualHash"
-
-            if ($actualHash -ne $expectedHash) {
-
-                throw @"
-SHA-256 mismatch.
-
-Package:
-  $packageName
 
 Expected:
   $expectedHash
@@ -302,44 +267,56 @@ Expected:
 Actual:
   $actualHash
 "@
-            }
+    }
 
-            Write-Host "  SHA-256 verified."
-        }
+    Write-Host "Verified:"
+    Write-Host "  $($update.kb)"
+    Write-Host "  $($update.fileName)"
+}
 
-        # ----------------------------------------------------
-        # Apply MSU
-        # ----------------------------------------------------
+# ------------------------------------------------------------
+# Mount WIM
+# ------------------------------------------------------------
+
+$mountArgs = @(
+    "/Mount-Wim"
+    "/WimFile:$WimFile"
+    "/Index:$ImageIndex"
+    "/MountDir:$MountDir"
+)
+
+Invoke-DismCommand `
+    -Operation "Mount WIM" `
+    -Arguments $mountArgs
+
+# ------------------------------------------------------------
+# Apply updates
+# ------------------------------------------------------------
+
+$mountSuccessful = $true
+
+try {
+
+    foreach ($update in $updates) {
+
+        $packagePath =
+            Join-Path $UpdatesDir $update.fileName
 
         Write-Host ""
-        Write-Host "Applying update:"
-        Write-Host "  Type:"
-        Write-Host "    $($update.type)"
-        Write-Host ""
-        Write-Host "  KB:"
-        Write-Host "    $($update.kb)"
-        Write-Host ""
-        Write-Host "  Package:"
-        Write-Host "    $packagePath"
+        Write-Host "============================================================"
+        Write-Host " Applying update"
+        Write-Host "============================================================"
+        Write-Host "KB:"
+        Write-Host "  $($update.kb)"
+        Write-Host "Build:"
+        Write-Host "  $($update.build)"
+        Write-Host "Package:"
+        Write-Host "  $packagePath"
+        Write-Host "============================================================"
 
-        # CRITICAL:
-        #
-        # Correct:
-        #
-        #   /Image:C:\...\mount\install
-        #   /Add-Package
-        #   /PackagePath:C:\...\foo.msu
-        #   /NoRestart
-        #
-        # NOT:
-        #
-        #   /Image
-        #   C:\...\mount\install
-        #
-        # and NOT:
-        #
-        #   /PackagePath
-        #   C:\...\foo.msu
+        # IMPORTANT:
+        # /Image:<path> MUST be one argument.
+        # /PackagePath:<path> MUST be one argument.
 
         $packageArgs = @(
             "/Image:$MountDir"
@@ -351,17 +328,11 @@ Actual:
         Invoke-DismCommand `
             -Operation "Apply $($update.kb)" `
             -Arguments $packageArgs
-
-        Write-Host ""
-        Write-Host "Successfully applied $($update.kb)."
     }
 
-    # ========================================================
+    # --------------------------------------------------------
     # Component cleanup
-    # ========================================================
-
-    Write-Host ""
-    Write-Host "Running component cleanup..."
+    # --------------------------------------------------------
 
     $cleanupArgs = @(
         "/Image:$MountDir"
@@ -373,12 +344,9 @@ Actual:
         -Operation "Component Cleanup" `
         -Arguments $cleanupArgs
 
-    # ========================================================
-    # Commit WIM
-    # ========================================================
-
-    Write-Host ""
-    Write-Host "Committing WIM..."
+    # --------------------------------------------------------
+    # Commit
+    # --------------------------------------------------------
 
     $commitArgs = @(
         "/Unmount-Wim"
@@ -387,91 +355,70 @@ Actual:
     )
 
     Invoke-DismCommand `
-        -Operation "Unmount WIM / Commit" `
+        -Operation "Commit WIM" `
         -Arguments $commitArgs
 
-    $mounted = $false
-
-    Write-Host ""
-    Write-Host "============================================================"
-    Write-Host " WIM servicing completed successfully"
-    Write-Host "============================================================"
-    Write-Host ""
-
+    $mountSuccessful = $false
 }
 catch {
 
     Write-Host ""
     Write-Host "============================================================"
-    Write-Host " WIM servicing FAILED"
+    Write-Host " Servicing failed"
     Write-Host "============================================================"
-    Write-Host $_.Exception.Message
-    Write-Host "============================================================"
+
+    Write-Host $_
+
     Write-Host ""
+    Write-Host "Attempting to discard mounted WIM..."
 
-    # ========================================================
-    # Discard mounted image after failure
-    # ========================================================
+    & $DismExe `
+        /Unmount-Wim `
+        /MountDir:$MountDir `
+        /Discard
 
-    if ($mounted) {
-
-        Write-Host ""
-        Write-Host "Attempting to discard mounted WIM..."
-
-        try {
-
-            $discardArgs = @(
-                "/Unmount-Wim"
-                "/MountDir:$MountDir"
-                "/Discard"
-            )
-
-            & $DismExe @discardArgs
-
-            $discardExitCode = $LASTEXITCODE
-
-            Write-Host ""
-            Write-Host "Discard exit code: $discardExitCode"
-        }
-        catch {
-
-            Write-Warning `
-                "Unable to discard mounted WIM: $($_.Exception.Message)"
-        }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Unable to discard mounted WIM."
     }
+
+    & $DismExe /Cleanup-Wim
 
     throw
 }
 
-# ============================================================
-# Verify final WIM
-# ============================================================
+# ------------------------------------------------------------
+# Final validation
+# ------------------------------------------------------------
 
-if (!(Test-Path -LiteralPath $WimFile -PathType Leaf)) {
-    throw "Final install.wim does not exist: $WimFile"
+if ($mountSuccessful) {
+    throw "WIM still appears to be mounted after servicing."
 }
 
-$finalWimInfo = Get-Item -LiteralPath $WimFile
+Write-Host ""
+Write-Host "Verifying final WIM..."
 
-$finalWimHash = (
+if (-not (Test-Path -LiteralPath $WimFile)) {
+    throw "Final install.wim does not exist."
+}
+
+$wimHash =
     Get-FileHash `
         -LiteralPath $WimFile `
         -Algorithm SHA256
-).Hash.ToLowerInvariant()
+
+$wimSize =
+    (Get-Item -LiteralPath $WimFile).Length
 
 Write-Host ""
 Write-Host "============================================================"
-Write-Host " Final WIM"
+Write-Host " Windows Image Servicing Complete"
 Write-Host "============================================================"
-Write-Host "Path:"
+Write-Host "WIM:"
 Write-Host "  $WimFile"
 Write-Host ""
 Write-Host "Size:"
-Write-Host "  $($finalWimInfo.Length) bytes"
+Write-Host "  $wimSize bytes"
 Write-Host ""
-Write-Host "SHA-256:"
-Write-Host "  $finalWimHash"
+Write-Host "SHA256:"
+Write-Host "  $($wimHash.Hash)"
 Write-Host "============================================================"
-Write-Host ""
-
-exit 0
