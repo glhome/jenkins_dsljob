@@ -141,14 +141,19 @@ function Write-Log {
 
 function Write-Section {
     param(
-        [AllowEmptyString()]
-        [AllowNull()]
         [string]$Message = ''
     )
 
     Write-Host ''
     Write-Host '============================================================'
-    Write-Host $Message
+
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        Write-Host 'Windows Image Update Resolver'
+    }
+    else {
+        Write-Host $Message
+    }
+
     Write-Host '============================================================'
     Write-Host ''
 }
