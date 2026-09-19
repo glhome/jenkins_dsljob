@@ -199,6 +199,7 @@ For reproducible image builds, supply BASE_ISO_SHA256.
 
     Write-Host ""
     Write-Host "Downloading from Artifactory..."
+    Write-Host "headers: $headers"
 
     Invoke-WebRequest `
         -Uri $url `
