@@ -728,39 +728,44 @@ Actual filename:
 
     try {
 
-        Write-Log `
-            'Expanding MSU for structural validation.'
+        Write-Log "Validating MSU archive structure."
 
-        & "$env:SystemRoot\System32\expand.exe" `
-            '-F:*' `
-            $MsuPath `
-            $tempRoot |
-            Out-Host
-
-        if ($LASTEXITCODE -ne 0) {
-            throw `
-                "expand.exe failed with exit code $LASTEXITCODE."
-        }
-
-        $cabFiles = @(
-            Get-ChildItem `
-                -LiteralPath $tempRoot `
-                -Recurse `
-                -Filter '*.cab' `
-                -File
+        $sevenZipCandidates = @(
+            "${env:ProgramFiles}\7-Zip\7z.exe",
+            "${env:ProgramFiles(x86)}\7-Zip\7z.exe"
         )
 
-        if ($cabFiles.Count -eq 0) {
-            throw 'MSU contains no CAB files.'
+        $sevenZip = $sevenZipCandidates |
+            Where-Object {
+                $_ -and (Test-Path -LiteralPath $_ -PathType Leaf)
+            } |
+            Select-Object -First 1
+
+        if (-not $sevenZip) {
+            throw "7-Zip was not found. Expected 7z.exe under Program Files or Program Files (x86)."
         }
 
-        Write-Log "CAB count: $($cabFiles.Count)"
-
-        foreach ($cab in $cabFiles) {
-            Write-Log "  CAB: $($cab.Name)"
+        if (-not (Test-Path -LiteralPath $MsuPath -PathType Leaf)) {
+            throw "MSU file does not exist: $MsuPath"
         }
 
-        Write-Log 'MSU structural validation: PASS'
+        $msuItem = Get-Item -LiteralPath $MsuPath
+
+        Write-Log "MSU:"
+        Write-Log "  Path : $($msuItem.FullName)"
+        Write-Log "  Size : $($msuItem.Length) bytes"
+        Write-Log "7-Zip:"
+        Write-Log "  Path : $sevenZip"
+
+        & $sevenZip t $MsuPath
+
+        $sevenZipExitCode = $LASTEXITCODE
+
+        if ($sevenZipExitCode -ne 0) {
+            throw "7-Zip MSU validation failed with exit code $sevenZipExitCode."
+        }
+
+        Write-Log "MSU archive validation: PASS"
     }
     finally {
 
