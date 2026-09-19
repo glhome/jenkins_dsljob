@@ -141,14 +141,16 @@ function Write-Log {
 
 function Write-Section {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$Title
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$Message = ''
     )
 
-    Write-Log ''
-    Write-Log '============================================================'
-    Write-Log " $Title"
-    Write-Log '============================================================'
+    Write-Host ''
+    Write-Host '============================================================'
+    Write-Host $Message
+    Write-Host '============================================================'
+    Write-Host ''
 }
 
 # ============================================================
