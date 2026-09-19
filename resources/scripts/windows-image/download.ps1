@@ -306,17 +306,48 @@ function Get-ArtifactoryArtifact {
 
     try {
 
-        Write-Host '  Sending GET request...'
+        Write-Host '  Downloading from Artifactory using JFrog CLI...'
+        Write-Host "  URL: $uri"
+        Write-Host "  Destination: $DestinationPath"
 
-        $response = Invoke-WebRequest `
-            -Uri $uri `
-            -Headers $headers `
-            -Method Get `
-            -OutFile $DestinationPath `
-            -UseBasicParsing `
-            -TimeoutSec 3600
+        $downloadStart = Get-Date
 
-        Write-Host "  HTTP Status: $($response.StatusCode)"
+        $destinationDirectory = Split-Path -Parent $DestinationPath
+
+        New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $destinationDirectory | Out-Null
+
+        $artifactSpec = "$ArtifactoryRepo/$relativePath"
+
+        Write-Host "  Artifact: $artifactSpec"
+
+        & jf rt dl `
+            $artifactSpec `
+            "$destinationDirectory\" `
+            --server-id=local-artifactory `
+            --flat=true
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "JFrog CLI download failed with exit code $LASTEXITCODE"
+        }
+
+        if (-not (Test-Path -LiteralPath $DestinationPath)) {
+            throw "JFrog CLI completed successfully but file was not found: $DestinationPath"
+        }
+
+        $downloadedFile = Get-Item -LiteralPath $DestinationPath
+
+        if ($downloadedFile.Length -eq 0) {
+            throw "Downloaded file is 0 bytes: $DestinationPath"
+        }
+
+        $downloadElapsed = (Get-Date) - $downloadStart
+
+        Write-Host "  Download completed."
+        Write-Host "  Size: $($downloadedFile.Length) bytes"
+        Write-Host "  Download time: $($downloadElapsed.ToString())"
     }
     catch {
 
@@ -324,10 +355,10 @@ function Get-ArtifactoryArtifact {
         Write-Host 'Artifactory request failed.'
         Write-Host "URL: $uri"
 
-        if ($_.Exception.Response) {
+        if (Test-Path -LiteralPath $DestinationPath) {
             try {
-                Write-Host `
-                    "HTTP Status: $([int]$_.Exception.Response.StatusCode)"
+                $partialFile = Get-Item -LiteralPath $DestinationPath
+                Write-Host "Partial file size: $($partialFile.Length) bytes"
             }
             catch {
             }
