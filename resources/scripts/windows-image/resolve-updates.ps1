@@ -899,7 +899,7 @@ $Kb
         }
     }
 
-    if ($updateIds.Count -eq 0 {
+    if ($updateIds.Count -eq 0) {
         throw "Unable to resolve a Catalog UpdateID for $Kb."
     }
 
