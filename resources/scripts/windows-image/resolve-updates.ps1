@@ -7,6 +7,7 @@ param(
     [string]$WindowsBuild = "26100",
 
     [Parameter(Mandatory = $false)]
+    [ValidateSet("x64", "amd64", "arm64")]
     [string]$Architecture = "x64",
 
     [Parameter(Mandatory = $false)]
@@ -19,36 +20,21 @@ param(
     [string]$ArtifactoryUser = "",
 
     [Parameter(Mandatory = $false)]
-    [string]$ArtifactoryPassword = ""
+    [string]$ArtifactoryPassword = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$ArtifactoryToken = "",
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ForceMicrosoftDownload
 )
 
-$ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-Write-Host "============================================================"
-Write-Host " Windows Image Update Resolver"
-Write-Host "============================================================"
-Write-Host "WorkRoot       : $WorkRoot"
-Write-Host "WindowsBuild   : $WindowsBuild"
-Write-Host "Architecture   : $Architecture"
-Write-Host "Artifactory    : $ArtifactoryBaseUrl"
-Write-Host "Repository     : $ArtifactoryRepo"
-Write-Host ""
-
-# ------------------------------------------------------------
-# Paths
-# ------------------------------------------------------------
-
-$downloadDir = Join-Path $WorkRoot "download"
-$updateDir   = Join-Path $downloadDir "updates"
-$manifest    = Join-Path $downloadDir "resolved-updates.json"
-
-New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
-New-Item -ItemType Directory -Force -Path $updateDir | Out-Null
-
-# ------------------------------------------------------------
-# Normalize values
-# ------------------------------------------------------------
+# ============================================================================
+# Normalize
+# ============================================================================
 
 if ($Architecture -match "(?i)^(amd64|x64)$") {
     $Architecture = "x64"
@@ -61,12 +47,134 @@ else {
 }
 
 if ($WindowsBuild -notmatch "^26100") {
-    Write-Warning "WindowsBuild '$WindowsBuild' is not the normal Windows 11 24H2 build family (26100)."
+    Write-Warning `
+        "WindowsBuild '$WindowsBuild' is outside the normal Windows 11 24H2 build family (26100)."
 }
 
-# ------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------
+# ============================================================================
+# Paths
+# ============================================================================
+
+$downloadDir = Join-Path $WorkRoot "download"
+$updateDir   = Join-Path $downloadDir "updates"
+$manifest    = Join-Path $downloadDir "resolved-updates.json"
+$logDir      = Join-Path $WorkRoot "logs"
+
+New-Item `
+    -ItemType Directory `
+    -Force `
+    -Path $downloadDir, $updateDir, $logDir |
+    Out-Null
+
+$logFile = Join-Path `
+    $logDir `
+    "resolve-updated-$(
+        Get-Date -Format 'yyyyMMdd-HHmmss'
+    ).log"
+
+# ============================================================================
+# Logging
+# ============================================================================
+
+function Write-Log {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [ValidateSet("INFO", "WARN", "ERROR")]
+        [string]$Level = "INFO"
+    )
+
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+    $line = "[$timestamp] [$Level] $Message"
+
+    Write-Host $line
+
+    Add-Content `
+        -LiteralPath $logFile `
+        -Value $line
+}
+
+function Write-Section {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Title
+    )
+
+    Write-Log ""
+    Write-Log "============================================================"
+    Write-Log " $Title"
+    Write-Log "============================================================"
+}
+
+# ============================================================================
+# Header
+# ============================================================================
+
+Write-Section "Windows Image Update Resolver"
+
+Write-Log "WorkRoot       : $WorkRoot"
+Write-Log "WindowsBuild   : $WindowsBuild"
+Write-Log "Architecture   : $Architecture"
+Write-Log "Artifactory    : $ArtifactoryBaseUrl"
+Write-Log "Repository     : $ArtifactoryRepo"
+Write-Log "Force Download : $ForceMicrosoftDownload"
+Write-Log "Manifest       : $manifest"
+Write-Log "Log            : $logFile"
+
+# ============================================================================
+# HTTP helpers
+# ============================================================================
+
+function Get-ArtifactoryHeaders {
+
+    $headers = @{}
+
+    if (-not [string]::IsNullOrWhiteSpace($ArtifactoryToken)) {
+
+        $headers["Authorization"] = "Bearer $ArtifactoryToken"
+
+        return $headers
+    }
+
+    if (
+        -not [string]::IsNullOrWhiteSpace($ArtifactoryUser) -and
+        -not [string]::IsNullOrWhiteSpace($ArtifactoryPassword)
+    ) {
+
+        $encoded = [Convert]::ToBase64String(
+            [Text.Encoding]::ASCII.GetBytes(
+                "$ArtifactoryUser`:$ArtifactoryPassword"
+            )
+        )
+
+        $headers["Authorization"] = "Basic $encoded"
+    }
+
+    return $headers
+}
+
+function Get-ArtifactoryUrl {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RelativePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ArtifactoryBaseUrl)) {
+        return $null
+    }
+
+    $base = $ArtifactoryBaseUrl.TrimEnd("/")
+
+    $relative = $RelativePath.TrimStart("/")
+
+    return "$base/$ArtifactoryRepo/$relative"
+}
+
+# ============================================================================
+# SHA-256
+# ============================================================================
 
 function Get-Sha256 {
     param(
@@ -74,8 +182,8 @@ function Get-Sha256 {
         [string]$Path
     )
 
-    if (!(Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "File not found for SHA-256 calculation: $Path"
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "File not found: $Path"
     }
 
     return (
@@ -85,15 +193,20 @@ function Get-Sha256 {
     ).Hash.ToLowerInvariant()
 }
 
+# ============================================================================
+# Microsoft Update Catalog
+# ============================================================================
+
 function Get-CatalogSearchUrl {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Query
     )
 
-    return "https://www.catalog.update.microsoft.com/Search.aspx?q=$(
+    return (
+        "https://www.catalog.update.microsoft.com/Search.aspx?q=" +
         [uri]::EscapeDataString($Query)
-    )"
+    )
 }
 
 function Get-CatalogPage {
@@ -104,15 +217,16 @@ function Get-CatalogPage {
 
     $url = Get-CatalogSearchUrl -Query $Query
 
-    Write-Host "Microsoft Update Catalog:"
-    Write-Host "  $url"
+    Write-Log "Microsoft Update Catalog query:"
+    Write-Log "  $Query"
+    Write-Log "  $url"
 
     $response = Invoke-WebRequest `
         -Uri $url `
         -UseBasicParsing `
         -TimeoutSec 120
 
-    if (!$response.Content) {
+    if ([string]::IsNullOrWhiteSpace($response.Content)) {
         throw "Microsoft Update Catalog returned an empty response."
     }
 
@@ -125,17 +239,17 @@ function Get-CatalogDownloadUrls {
         [string]$UpdateId
     )
 
-    Write-Host "Resolving Microsoft download URL"
-    Write-Host "  UpdateID: $UpdateId"
+    Write-Log "Resolving Catalog download URLs"
+    Write-Log "UpdateID: $UpdateId"
 
-    $post = @{
+    $updateObject = @{
         size     = 0
         updateID = $UpdateId
         uidInfo  = $UpdateId
     } | ConvertTo-Json -Compress
 
     $body = @{
-        updateIDs = "[$post]"
+        updateIDs = "[$updateObject]"
     }
 
     $response = Invoke-WebRequest `
@@ -146,29 +260,25 @@ function Get-CatalogDownloadUrls {
         -UseBasicParsing `
         -TimeoutSec 120
 
-    if (!$response.Content) {
-        throw "DownloadDialog returned an empty response for UpdateID $UpdateId"
+    if ([string]::IsNullOrWhiteSpace($response.Content)) {
+        throw "DownloadDialog returned an empty response."
     }
 
-    $content = $response.Content
-
-    $content = $content.Replace("&amp;", "&")
+    $content = $response.Content.Replace("&amp;", "&")
 
     $pattern = 'https?://[^"''\s<>]+'
 
     $matches = [regex]::Matches(
         $content,
         $pattern,
-        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        [Text.RegularExpressions.RegexOptions]::IgnoreCase
     )
 
-    $urls = @()
+    $urls = New-Object System.Collections.Generic.List[string]
 
     foreach ($match in $matches) {
 
-        $url = $match.Value
-
-        $url = $url.TrimEnd(
+        $url = $match.Value.TrimEnd(
             "'",
             '"',
             ')',
@@ -176,28 +286,31 @@ function Get-CatalogDownloadUrls {
         )
 
         if (
-            $url -match '(?i)download\.windowsupdate\.com' -or
-            $url -match '(?i)delivery\.mp\.microsoft\.com' -or
-            $url -match '(?i)windowsupdate\.com'
+            $url -match "(?i)download\.windowsupdate\.com" -or
+            $url -match "(?i)delivery\.mp\.microsoft\.com" -or
+            $url -match "(?i)windowsupdate\.com"
         ) {
-            if ($urls -notcontains $url) {
-                $urls += $url
+
+            if (-not $urls.Contains($url)) {
+                $urls.Add($url)
             }
         }
     }
 
     if ($urls.Count -eq 0) {
-        throw "No Microsoft download URL found for UpdateID $UpdateId"
+        throw "No Microsoft download URLs found for UpdateID $UpdateId."
     }
-
-    Write-Host "Microsoft download URLs found: $($urls.Count)"
 
     foreach ($url in $urls) {
-        Write-Host "  $url"
+        Write-Log "Catalog URL: $url"
     }
 
-    return $urls
+    return @($urls)
 }
+
+# ============================================================================
+# URL filename
+# ============================================================================
 
 function Get-FileNameFromUrl {
     param(
@@ -212,159 +325,15 @@ function Get-FileNameFromUrl {
     )
 
     if ([string]::IsNullOrWhiteSpace($name)) {
-        throw "Could not determine file name from URL: $Url"
+        throw "Unable to determine filename from URL: $Url"
     }
 
     return $name
 }
 
-function Find-ArtifactoryFile {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$RelativePath
-    )
-
-    if ([string]::IsNullOrWhiteSpace($ArtifactoryBaseUrl)) {
-        return $null
-    }
-
-    $base = $ArtifactoryBaseUrl.TrimEnd("/")
-    $url  = "$base/$ArtifactoryRepo/$RelativePath"
-
-    try {
-
-        $request = [System.Net.WebRequest]::Create($url)
-        $request.Method = "HEAD"
-
-        if (
-            $ArtifactoryUser -and
-            $ArtifactoryPassword
-        ) {
-            $token = [Convert]::ToBase64String(
-                [Text.Encoding]::ASCII.GetBytes(
-                    "$ArtifactoryUser`:$ArtifactoryPassword"
-                )
-            )
-
-            $request.Headers["Authorization"] = "Basic $token"
-        }
-
-        $response = $request.GetResponse()
-
-        try {
-            $response.Close()
-        }
-        catch {
-        }
-
-        return $url
-    }
-    catch {
-        return $null
-    }
-}
-
-function Download-ArtifactoryFile {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Url,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Destination
-    )
-
-    Write-Host "Downloading cached artifact:"
-    Write-Host "  $Url"
-
-    $headers = @{}
-
-    if (
-        $ArtifactoryUser -and
-        $ArtifactoryPassword
-    ) {
-        $token = [Convert]::ToBase64String(
-            [Text.Encoding]::ASCII.GetBytes(
-                "$ArtifactoryUser`:$ArtifactoryPassword"
-            )
-        )
-
-        $headers["Authorization"] = "Basic $token"
-    }
-
-    Invoke-WebRequest `
-        -Uri $Url `
-        -OutFile $Destination `
-        -Headers $headers `
-        -UseBasicParsing `
-        -TimeoutSec 1800
-
-    if (!(Test-Path -LiteralPath $Destination -PathType Leaf)) {
-        throw "Artifactory download failed: $Destination"
-    }
-
-    $length = (Get-Item -LiteralPath $Destination).Length
-
-    if ($length -eq 0) {
-        throw "Artifactory returned an empty artifact: $Destination"
-    }
-}
-
-function Upload-ArtifactoryFile {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Source,
-
-        [Parameter(Mandatory = $true)]
-        [string]$RelativePath
-    )
-
-    if ([string]::IsNullOrWhiteSpace($ArtifactoryBaseUrl)) {
-        throw "ArtifactoryBaseUrl is required when an update is not already cached."
-    }
-
-    $base = $ArtifactoryBaseUrl.TrimEnd("/")
-    $url  = "$base/$ArtifactoryRepo/$RelativePath"
-
-    Write-Host "Publishing immutable update:"
-    Write-Host "  $url"
-
-    $headers = @{}
-
-    if (
-        $ArtifactoryUser -and
-        $ArtifactoryPassword
-    ) {
-        $token = [Convert]::ToBase64String(
-            [Text.Encoding]::ASCII.GetBytes(
-                "$ArtifactoryUser`:$ArtifactoryPassword"
-            )
-        )
-
-        $headers["Authorization"] = "Basic $token"
-    }
-
-    # Never overwrite an existing artifact.
-    $existing = Find-ArtifactoryFile `
-        -RelativePath $RelativePath
-
-    if ($existing) {
-        Write-Host "Artifact already exists."
-        Write-Host "Immutable repository; not overwriting."
-
-        return $existing
-    }
-
-    Invoke-WebRequest `
-        -Uri $url `
-        -Method Put `
-        -InFile $Source `
-        -Headers $headers `
-        -ContentType "application/octet-stream" `
-        -UseBasicParsing `
-        -TimeoutSec 3600
-
-    return $url
-}
+# ============================================================================
+# KB / architecture validation
+# ============================================================================
 
 function Test-MsuFileNameMatchesKb {
     param(
@@ -375,90 +344,195 @@ function Test-MsuFileNameMatchesKb {
         [string]$Kb
     )
 
-    $kbNumber = $Kb -replace '(?i)^KB', ''
+    $kbNumber = $Kb -replace "(?i)^KB", ""
 
     $pattern = "(?i)kb$([regex]::Escape($kbNumber))(?:[^0-9]|$)"
 
-    return ($FileName -match $pattern)
+    return $FileName -match $pattern
 }
 
-function Get-MsuMetadata {
+function Test-MsuFileNameMatchesArchitecture {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$MsuPath
+        [string]$FileName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedArchitecture
     )
 
-    if (!(Test-Path -LiteralPath $MsuPath -PathType Leaf)) {
-        throw "MSU not found: $MsuPath"
+    if ($ExpectedArchitecture -eq "x64") {
+        return $FileName -match "(?i)(x64|amd64)"
     }
 
-    Write-Host ""
-    Write-Host "Reading MSU package metadata:"
-    Write-Host "  $MsuPath"
+    if ($ExpectedArchitecture -eq "arm64") {
+        return $FileName -match "(?i)arm64"
+    }
 
-    $tempRoot = Join-Path `
-        ([System.IO.Path]::GetTempPath()) `
-        ("WindowsImageMSU_" + [guid]::NewGuid().ToString("N"))
+    return $false
+}
 
-    New-Item `
-        -ItemType Directory `
-        -Force `
-        -Path $tempRoot | Out-Null
+# ============================================================================
+# Artifactory existence
+# ============================================================================
+
+function Find-ArtifactoryFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RelativePath
+    )
+
+    $url = Get-ArtifactoryUrl -RelativePath $RelativePath
+
+    if (-not $url) {
+        return $null
+    }
+
+    $headers = Get-ArtifactoryHeaders
+
+    Write-Log "Checking Artifactory:"
+    Write-Log "  $url"
 
     try {
 
-        & "$env:SystemRoot\System32\expand.exe" `
-            -F:* `
-            $MsuPath `
-            $tempRoot | Out-Host
+        $response = Invoke-WebRequest `
+            -Uri $url `
+            -Method Head `
+            -Headers $headers `
+            -UseBasicParsing `
+            -TimeoutSec 60
 
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to expand MSU. Exit code: $LASTEXITCODE"
+        if (
+            $response.StatusCode -ge 200 -and
+            $response.StatusCode -lt 300
+        ) {
+            return $url
         }
 
-        $cabFiles = @(
-            Get-ChildItem `
-                -LiteralPath $tempRoot `
-                -Recurse `
-                -Filter "*.cab" `
-                -File
-        )
-
-        if ($cabFiles.Count -eq 0) {
-            throw "No CAB file found inside MSU: $MsuPath"
-        }
-
-        $xmlFiles = @(
-            Get-ChildItem `
-                -LiteralPath $tempRoot `
-                -Recurse `
-                -Filter "*.xml" `
-                -File
-        )
-
-        $packageXml = $xmlFiles |
-            Where-Object {
-                $_.Name -match '(?i)metadata|package'
-            } |
-            Select-Object -First 1
-
-        [pscustomobject]@{
-            CabFiles    = @($cabFiles)
-            XmlFiles    = @($xmlFiles)
-            PackageXml  = $packageXml
-            ExtractRoot = $tempRoot
-        }
+        return $null
     }
     catch {
-        Remove-Item `
-            -LiteralPath $tempRoot `
-            -Recurse `
-            -Force `
-            -ErrorAction SilentlyContinue
 
-        throw
+        if (
+            $_.Exception.Response -and
+            $_.Exception.Response.StatusCode.value__ -eq 404
+        ) {
+            return $null
+        }
+
+        Write-Log `
+            "Artifactory HEAD failed: $($_.Exception.Message)" `
+            "WARN"
+
+        return $null
     }
 }
+
+# ============================================================================
+# Artifactory download
+# ============================================================================
+
+function Download-ArtifactoryFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Url,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    Write-Log "Downloading cached Artifactory artifact"
+    Write-Log "  URL         : $Url"
+    Write-Log "  Destination : $Destination"
+
+    $headers = Get-ArtifactoryHeaders
+
+    Invoke-WebRequest `
+        -Uri $Url `
+        -OutFile $Destination `
+        -Headers $headers `
+        -UseBasicParsing `
+        -TimeoutSec 3600
+
+    if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+        throw "Artifactory download did not create: $Destination"
+    }
+
+    $length = (
+        Get-Item -LiteralPath $Destination
+    ).Length
+
+    if ($length -le 0) {
+        throw "Artifactory returned an empty file: $Destination"
+    }
+
+    Write-Log "Downloaded $length bytes from Artifactory."
+}
+
+# ============================================================================
+# Artifactory upload
+# ============================================================================
+
+function Upload-ArtifactoryFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RelativePath
+    )
+
+    $url = Get-ArtifactoryUrl -RelativePath $RelativePath
+
+    if (-not $url) {
+        throw "ArtifactoryBaseUrl is required for publishing."
+    }
+
+    # ------------------------------------------------------------------------
+    # Double-check immediately before upload.
+    # ------------------------------------------------------------------------
+
+    $existing = Find-ArtifactoryFile `
+        -RelativePath $RelativePath
+
+    if ($existing) {
+
+        Write-Log "Artifact already exists."
+        Write-Log "Repository is immutable; upload skipped."
+
+        return $existing
+    }
+
+    $headers = Get-ArtifactoryHeaders
+
+    Write-Log "Publishing immutable artifact:"
+    Write-Log "  $url"
+
+    Invoke-WebRequest `
+        -Uri $url `
+        -Method Put `
+        -InFile $Source `
+        -Headers $headers `
+        -ContentType "application/octet-stream" `
+        -UseBasicParsing `
+        -TimeoutSec 3600
+
+    # ------------------------------------------------------------------------
+    # Verify artifact exists after upload.
+    # ------------------------------------------------------------------------
+
+    $verified = Find-ArtifactoryFile `
+        -RelativePath $RelativePath
+
+    if (-not $verified) {
+        throw "Artifact upload could not be verified: $url"
+    }
+
+    return $verified
+}
+
+# ============================================================================
+# Expand / validate MSU
+# ============================================================================
 
 function Test-MsuPackage {
     param(
@@ -472,138 +546,487 @@ function Test-MsuPackage {
         [string]$ExpectedArchitecture
     )
 
-    Write-Host ""
-    Write-Host "============================================================"
-    Write-Host " Validating MSU"
-    Write-Host "============================================================"
+    Write-Section "Validate MSU"
 
     $fileName = Split-Path `
         -Leaf `
         $MsuPath
 
-    Write-Host "File:"
-    Write-Host "  $fileName"
+    Write-Log "MSU: $fileName"
 
-    # --------------------------------------------------------
-    # Filename must contain selected KB.
-    # --------------------------------------------------------
+    # ------------------------------------------------------------------------
+    # KB
+    # ------------------------------------------------------------------------
 
-    if (!(Test-MsuFileNameMatchesKb `
-        -FileName $fileName `
-        -Kb $ExpectedKb)) {
+    if (-not (
+        Test-MsuFileNameMatchesKb `
+            -FileName $fileName `
+            -Kb $ExpectedKb
+    )) {
 
         throw @"
 MSU validation FAILED.
 
-The downloaded MSU does not match the selected KB.
-
-Expected:
+Expected KB:
   $ExpectedKb
 
-Actual file:
+Actual filename:
   $fileName
-
-This indicates that the Microsoft Update Catalog UpdateID
-and download URL do not correspond to the selected update.
-
-The image build has been stopped intentionally.
 "@
     }
 
-    Write-Host "KB filename validation: PASS"
+    Write-Log "KB filename check: PASS"
 
-    # --------------------------------------------------------
-    # Architecture must match.
-    # --------------------------------------------------------
+    # ------------------------------------------------------------------------
+    # Architecture
+    # ------------------------------------------------------------------------
 
-    if (
-        $ExpectedArchitecture -eq "x64" -and
-        $fileName -notmatch "(?i)(x64|amd64)"
-    ) {
+    if (-not (
+        Test-MsuFileNameMatchesArchitecture `
+            -FileName $fileName `
+            -ExpectedArchitecture $ExpectedArchitecture
+    )) {
+
         throw @"
 MSU validation FAILED.
 
-Expected x64 package but filename does not indicate x64/amd64:
+Expected architecture:
+  $ExpectedArchitecture
 
-$fileName
+Actual filename:
+  $fileName
 "@
     }
 
-    if (
-        $ExpectedArchitecture -eq "arm64" -and
-        $fileName -notmatch "(?i)arm64"
-    ) {
-        throw @"
-MSU validation FAILED.
+    Write-Log "Architecture filename check: PASS"
 
-Expected ARM64 package but filename does not indicate ARM64:
+    # ------------------------------------------------------------------------
+    # Expand
+    # ------------------------------------------------------------------------
 
-$fileName
-"@
-    }
+    $tempRoot = Join-Path `
+        ([IO.Path]::GetTempPath()) `
+        ("WindowsImageMSU_" + [guid]::NewGuid().ToString("N"))
 
-    Write-Host "Architecture filename validation: PASS"
-
-    # --------------------------------------------------------
-    # Validate MSU can be expanded.
-    # --------------------------------------------------------
-
-    $metadata = Get-MsuMetadata `
-        -MsuPath $MsuPath
+    New-Item `
+        -ItemType Directory `
+        -Force `
+        -Path $tempRoot |
+        Out-Null
 
     try {
 
-        Write-Host "CAB files inside MSU: $($metadata.CabFiles.Count)"
+        Write-Log "Expanding MSU for structural validation."
 
-        foreach ($cab in $metadata.CabFiles) {
-            Write-Host "  $($cab.Name)"
+        & "$env:SystemRoot\System32\expand.exe" `
+            "-F:*" `
+            $MsuPath `
+            $tempRoot |
+            Out-Host
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "expand.exe failed with exit code $LASTEXITCODE."
         }
 
-        if ($metadata.XmlFiles.Count -gt 0) {
+        $cabFiles = @(
+            Get-ChildItem `
+                -LiteralPath $tempRoot `
+                -Recurse `
+                -Filter "*.cab" `
+                -File
+        )
 
-            Write-Host "XML files inside MSU: $($metadata.XmlFiles.Count)"
-
-            foreach ($xml in $metadata.XmlFiles) {
-                Write-Host "  $($xml.Name)"
-            }
+        if ($cabFiles.Count -eq 0) {
+            throw "MSU contains no CAB files."
         }
 
-        Write-Host "MSU extraction validation: PASS"
+        Write-Log "CAB count: $($cabFiles.Count)"
 
-        return $true
+        foreach ($cab in $cabFiles) {
+            Write-Log "  CAB: $($cab.Name)"
+        }
+
+        Write-Log "MSU structural validation: PASS"
     }
     finally {
 
-        if ($metadata.ExtractRoot) {
-
-            Remove-Item `
-                -LiteralPath $metadata.ExtractRoot `
-                -Recurse `
-                -Force `
-                -ErrorAction SilentlyContinue
-        }
+        Remove-Item `
+            -LiteralPath $tempRoot `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
     }
 }
 
-# ------------------------------------------------------------
+# ============================================================================
+# Parse Catalog candidates
+# ============================================================================
+
+function Get-CatalogCandidates {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Html
+    )
+
+    $rows = [regex]::Matches(
+        $Html,
+        '<tr[^>]*>(.*?)</tr>',
+        [Text.RegularExpressions.RegexOptions]::Singleline
+    )
+
+    $candidates = @()
+
+    foreach ($rowMatch in $rows) {
+
+        $row = $rowMatch.Groups[1].Value
+
+        $plain = [System.Net.WebUtility]::HtmlDecode(
+            ($row -replace '<[^>]+>', ' ')
+        )
+
+        $plain = $plain -replace '\s+', ' '
+        $plain = $plain.Trim()
+
+        # --------------------------------------------------------------------
+        # Windows 11
+        # --------------------------------------------------------------------
+
+        if ($plain -notmatch "(?i)Windows 11") {
+            continue
+        }
+
+        if ($plain -notmatch "(?i)version 24H2") {
+            continue
+        }
+
+        # --------------------------------------------------------------------
+        # Cumulative update
+        # --------------------------------------------------------------------
+
+        if ($plain -notmatch "(?i)Cumulative Update") {
+            continue
+        }
+
+        if ($plain -notmatch "(?i)Security Updates") {
+            continue
+        }
+
+        # --------------------------------------------------------------------
+        # Exclusions
+        # --------------------------------------------------------------------
+
+        if ($plain -match "(?i)Preview") {
+            continue
+        }
+
+        if ($plain -match "(?i)\.NET") {
+            continue
+        }
+
+        if ($plain -match "(?i)Dynamic Update") {
+            continue
+        }
+
+        if ($plain -match "(?i)Server") {
+            continue
+        }
+
+        # --------------------------------------------------------------------
+        # Architecture
+        # --------------------------------------------------------------------
+
+        if ($Architecture -eq "x64") {
+
+            if ($plain -notmatch "(?i)x64-based Systems") {
+                continue
+            }
+
+            if ($plain -match "(?i)ARM64") {
+                continue
+            }
+        }
+
+        if ($Architecture -eq "arm64") {
+
+            if ($plain -notmatch "(?i)ARM64-based Systems") {
+                continue
+            }
+        }
+
+        # --------------------------------------------------------------------
+        # KB
+        # --------------------------------------------------------------------
+
+        $kbMatch = [regex]::Match(
+            $plain,
+            "(?i)\(KB(\d+)\)"
+        )
+
+        if (-not $kbMatch.Success) {
+            continue
+        }
+
+        $kb = "KB$($kbMatch.Groups[1].Value)"
+
+        # --------------------------------------------------------------------
+        # Build
+        # --------------------------------------------------------------------
+
+        $build = ""
+
+        $buildMatch = [regex]::Match(
+            $plain,
+            "\((26100\.\d+)\)"
+        )
+
+        if ($buildMatch.Success) {
+            $build = $buildMatch.Groups[1].Value
+        }
+
+        # --------------------------------------------------------------------
+        # Date
+        # --------------------------------------------------------------------
+
+        $date = [datetime]::MinValue
+
+        $dateMatch = [regex]::Match(
+            $plain,
+            "(\d{1,2}/\d{1,2}/\d{4})"
+        )
+
+        if ($dateMatch.Success) {
+
+            try {
+                $date = [datetime]::Parse(
+                    $dateMatch.Groups[1].Value
+                )
+            }
+            catch {
+                $date = [datetime]::MinValue
+            }
+        }
+
+        # --------------------------------------------------------------------
+        # UpdateID GUIDs in row
+        # --------------------------------------------------------------------
+
+        $updateIds = @()
+
+        $guidMatches = [regex]::Matches(
+            $row,
+            "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+        )
+
+        foreach ($guid in $guidMatches) {
+
+            if ($updateIds -notcontains $guid.Value) {
+                $updateIds += $guid.Value
+            }
+        }
+
+        $candidates += [pscustomobject]@{
+            KB        = $kb
+            Build     = $build
+            Date      = $date
+            Title     = $plain
+            UpdateIds = @($updateIds)
+        }
+    }
+
+    return @($candidates)
+}
+
+# ============================================================================
+# Find UpdateID for selected KB
+# ============================================================================
+
+function Resolve-UpdateId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Kb
+    )
+
+    Write-Section "Resolve UpdateID"
+
+    $html = Get-CatalogPage -Query $Kb
+
+    $candidates = Get-CatalogCandidates -Html $html
+
+    $matches = @(
+        $candidates |
+            Where-Object {
+                $_.KB -eq $Kb
+            }
+    )
+
+    if ($matches.Count -eq 0) {
+
+        throw @"
+No matching Windows 11 24H2 $Architecture catalog row found for:
+
+$Kb
+"@
+    }
+
+    $updateIds = @()
+
+    foreach ($candidate in $matches) {
+
+        foreach ($id in $candidate.UpdateIds) {
+
+            if ($updateIds -notcontains $id) {
+                $updateIds += $id
+            }
+        }
+    }
+
+    # ------------------------------------------------------------------------
+    # Fallback: search page for GUIDs.
+    # ------------------------------------------------------------------------
+
+    if ($updateIds.Count -eq 0) {
+
+        $guidMatches = [regex]::Matches(
+            $html,
+            "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+        )
+
+        foreach ($guid in $guidMatches) {
+
+            if ($updateIds -notcontains $guid.Value) {
+                $updateIds += $guid.Value
+            }
+        }
+    }
+
+    if ($updateIds.Count -eq 0 {
+        throw "Unable to resolve a Catalog UpdateID for $Kb."
+    }
+
+    Write-Log "UpdateIDs found: $($updateIds.Count)"
+
+    foreach ($id in $updateIds) {
+        Write-Log "  $id"
+    }
+
+    return @($updateIds)
+}
+
+# ============================================================================
+# Select matching MSU URL
+# ============================================================================
+
+function Resolve-MsuDownload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Kb,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$UpdateIds
+    )
+
+    Write-Section "Resolve MSU Download"
+
+    foreach ($updateId in $UpdateIds) {
+
+        Write-Log "Testing UpdateID: $updateId"
+
+        try {
+
+            $urls = Get-CatalogDownloadUrls `
+                -UpdateId $updateId
+
+            foreach ($url in $urls) {
+
+                try {
+
+                    $candidateFileName =
+                        Get-FileNameFromUrl -Url $url
+
+                    Write-Log "Candidate: $candidateFileName"
+
+                    if (
+                        $candidateFileName -notmatch "(?i)\.msu$"
+                    ) {
+                        Write-Log "Rejected: not an MSU."
+                        continue
+                    }
+
+                    if (-not (
+                        Test-MsuFileNameMatchesKb `
+                            -FileName $candidateFileName `
+                            -Kb $Kb
+                    )) {
+                        Write-Log "Rejected: KB mismatch."
+                        continue
+                    }
+
+                    if (-not (
+                        Test-MsuFileNameMatchesArchitecture `
+                            -FileName $candidateFileName `
+                            -ExpectedArchitecture $Architecture
+                    )) {
+                        Write-Log "Rejected: architecture mismatch."
+                        continue
+                    }
+
+                    Write-Log "ACCEPTED: $candidateFileName"
+
+                    return [pscustomobject]@{
+                        UpdateId = $updateId
+                        Url      = $url
+                        FileName = $candidateFileName
+                    }
+                }
+                catch {
+
+                    Write-Log `
+                        "Candidate rejected: $($_.Exception.Message)" `
+                        "WARN"
+                }
+            }
+        }
+        catch {
+
+            Write-Log `
+                "UpdateID failed: $($_.Exception.Message)" `
+                "WARN"
+        }
+    }
+
+    throw @"
+Unable to resolve a valid MSU for:
+
+KB:
+  $Kb
+
+Architecture:
+  $Architecture
+"@
+}
+
+# ============================================================================
 # Locate base ISO
-# ------------------------------------------------------------
+# ============================================================================
 
 $baseIso = Join-Path `
     $downloadDir `
     "base.iso"
 
-if (!(Test-Path -LiteralPath $baseIso -PathType Leaf)) {
-    throw "Base ISO not found: $baseIso"
+if (-not (Test-Path -LiteralPath $baseIso -PathType Leaf)) {
+
+    throw @"
+Base ISO was not found:
+
+$baseIso
+"@
 }
 
-Write-Host "Base ISO:"
-Write-Host "  $baseIso"
-Write-Host ""
+Write-Log "Base ISO found: $baseIso"
 
-# ------------------------------------------------------------
-# Locate install.wim if extraction already happened.
-# ------------------------------------------------------------
+# ============================================================================
+# Optional WIM inspection
+# ============================================================================
 
 $sourceDir = Join-Path `
     $WorkRoot `
@@ -615,8 +1038,7 @@ $wimPath = Join-Path `
 
 if (Test-Path -LiteralPath $wimPath -PathType Leaf) {
 
-    Write-Host "Found install.wim:"
-    Write-Host "  $wimPath"
+    Write-Section "Inspect Existing WIM"
 
     try {
 
@@ -625,233 +1047,81 @@ if (Test-Path -LiteralPath $wimPath -PathType Leaf) {
             "/WimFile:$wimPath" `
             2>&1
 
-        Write-Host ($wimInfo -join [Environment]::NewLine)
+        $wimInfo |
+            ForEach-Object {
+                Write-Log "$_"
+            }
 
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Unable to query WIM information."
+            Write-Log "DISM WIM inspection failed." "WARN"
         }
     }
     catch {
-        Write-Warning "Unable to query WIM information: $($_.Exception.Message)"
+
+        Write-Log `
+            "Unable to inspect WIM: $($_.Exception.Message)" `
+            "WARN"
     }
 }
 else {
 
-    Write-Host "install.wim is not extracted yet."
-    Write-Host "Using supplied WindowsBuild/Architecture."
+    Write-Log "install.wim not extracted yet."
 }
 
-# ------------------------------------------------------------
-# Microsoft Update Catalog search
-# ------------------------------------------------------------
+# ============================================================================
+# Search latest LCU
+# ============================================================================
 
-$query = "Windows 11 24H2 cumulative update $Architecture"
+Write-Section "Find Latest Windows 11 24H2 LCU"
 
-Write-Host ""
-Write-Host "============================================================"
-Write-Host " Searching Microsoft Update Catalog"
-Write-Host "============================================================"
-Write-Host "Query:"
-Write-Host "  $query"
-Write-Host ""
+$query =
+    "Windows 11 24H2 cumulative update $Architecture"
 
 $html = Get-CatalogPage `
     -Query $query
 
-# ------------------------------------------------------------
-# Parse Catalog rows
-# ------------------------------------------------------------
-
-$rows = [regex]::Matches(
-    $html,
-    '<tr[^>]*>(.*?)</tr>',
-    [System.Text.RegularExpressions.RegexOptions]::Singleline
-)
-
-$candidates = @()
-
-foreach ($rowMatch in $rows) {
-
-    $row = $rowMatch.Groups[1].Value
-
-    $plain = [System.Net.WebUtility]::HtmlDecode(
-        ($row -replace '<[^>]+>', ' ')
-    )
-
-    $plain = $plain -replace '\s+', ' '
-    $plain = $plain.Trim()
-
-    # --------------------------------------------------------
-    # Windows 11 24H2
-    # --------------------------------------------------------
-
-    if ($plain -notmatch '(?i)Windows 11') {
-        continue
-    }
-
-    if ($plain -notmatch '(?i)version 24H2') {
-        continue
-    }
-
-    # --------------------------------------------------------
-    # Cumulative security update
-    # --------------------------------------------------------
-
-    if ($plain -notmatch '(?i)Cumulative Update') {
-        continue
-    }
-
-    if ($plain -notmatch '(?i)Security Updates') {
-        continue
-    }
-
-    # --------------------------------------------------------
-    # Architecture
-    # --------------------------------------------------------
-
-    if ($Architecture -eq "x64") {
-
-        if ($plain -notmatch '(?i)x64-based Systems') {
-            continue
-        }
-
-        if ($plain -match '(?i)ARM64') {
-            continue
-        }
-    }
-    elseif ($Architecture -eq "arm64") {
-
-        if ($plain -notmatch '(?i)ARM64-based Systems') {
-            continue
-        }
-    }
-
-    # --------------------------------------------------------
-    # Exclude preview / .NET / dynamic / server
-    # --------------------------------------------------------
-
-    if ($plain -match '(?i)Preview') {
-        continue
-    }
-
-    if ($plain -match '(?i)\.NET') {
-        continue
-    }
-
-    if ($plain -match '(?i)Dynamic Update') {
-        continue
-    }
-
-    if ($plain -match '(?i)Server') {
-        continue
-    }
-
-    # --------------------------------------------------------
-    # KB
-    # --------------------------------------------------------
-
-    $kbMatch = [regex]::Match(
-        $plain,
-        '(?i)\(KB(\d+)\)'
-    )
-
-    if (!$kbMatch.Success) {
-        continue
-    }
-
-    $kb = "KB$($kbMatch.Groups[1].Value)"
-
-    # --------------------------------------------------------
-    # Build
-    # --------------------------------------------------------
-
-    $buildMatch = [regex]::Match(
-        $plain,
-        '\((26100\.\d+)\)'
-    )
-
-    $build = ""
-
-    if ($buildMatch.Success) {
-        $build = $buildMatch.Groups[1].Value
-    }
-
-    # --------------------------------------------------------
-    # Date
-    # --------------------------------------------------------
-
-    $dateMatch = [regex]::Match(
-        $plain,
-        '(\d{1,2}/\d{1,2}/\d{4})'
-    )
-
-    if ($dateMatch.Success) {
-
-        try {
-            $date = [datetime]::Parse(
-                $dateMatch.Groups[1].Value
-            )
-        }
-        catch {
-            $date = [datetime]::MinValue
-        }
-    }
-    else {
-        $date = [datetime]::MinValue
-    }
-
-    $candidates += [pscustomobject]@{
-        KB    = $kb
-        Build = $build
-        Date  = $date
-        Title = $plain
-    }
-}
-
-# ------------------------------------------------------------
-# Remove duplicate KBs
-# ------------------------------------------------------------
-
-$candidates = @(
-    $candidates |
-        Sort-Object KB, Date -Unique
-)
+$candidates = Get-CatalogCandidates `
+    -Html $html
 
 if ($candidates.Count -eq 0) {
 
     throw @"
-Could not find a Windows 11 24H2 $Architecture LCU
-in Microsoft Update Catalog.
+No Windows 11 24H2 $Architecture cumulative update was found.
 
-Search:
+Query:
 $query
 "@
 }
 
-Write-Host ""
-Write-Host "Catalog candidates:"
-Write-Host ""
+# ============================================================================
+# Deduplicate KBs
+# ============================================================================
 
-foreach ($candidate in $candidates) {
+$candidates =
+    $candidates |
+    Group-Object KB |
+    ForEach-Object {
+        $_.Group |
+            Sort-Object Date -Descending |
+            Select-Object -First 1
+    }
 
-    Write-Host (
-        "  {0} | {1} | {2}" -f
-        $candidate.KB,
-        $candidate.Build,
-        $candidate.Date.ToString("yyyy-MM-dd")
-    )
-}
+# ============================================================================
+# Select newest update
+# ============================================================================
 
-# ------------------------------------------------------------
-# Select newest candidate
-# ------------------------------------------------------------
-
-$selected = $candidates |
+$selected =
+    $candidates |
     Sort-Object `
         @{ Expression = { $_.Date }; Descending = $true }, `
         @{ Expression = {
             if ($_.Build) {
-                [version]$_.Build
+                try {
+                    [version]$_.Build
+                }
+                catch {
+                    [version]"0.0"
+                }
             }
             else {
                 [version]"0.0"
@@ -859,444 +1129,51 @@ $selected = $candidates |
         }; Descending = $true } |
     Select-Object -First 1
 
-if (!$selected) {
-    throw "Unable to select an LCU candidate."
+if (-not $selected) {
+    throw "Unable to select the latest LCU."
 }
 
-Write-Host ""
-Write-Host "============================================================"
-Write-Host " Selected LCU"
-Write-Host "============================================================"
-Write-Host "KB       : $($selected.KB)"
-Write-Host "Build    : $($selected.Build)"
-Write-Host "Date     : $($selected.Date.ToString('yyyy-MM-dd'))"
-Write-Host "Title    : $($selected.Title)"
-Write-Host ""
+Write-Section "Selected LCU"
 
-# ------------------------------------------------------------
-# IMPORTANT:
-#
-# Now search Microsoft Catalog specifically for the selected KB.
-#
-# This gives us a much smaller and more deterministic page from
-# which to obtain the correct UpdateID.
-# ------------------------------------------------------------
+Write-Log "KB    : $($selected.KB)"
+Write-Log "Build : $($selected.Build)"
+Write-Log "Date  : $($selected.Date.ToString('yyyy-MM-dd'))"
+Write-Log "Title : $($selected.Title)"
 
-$kbQuery = $selected.KB
+# ============================================================================
+# Resolve UpdateID
+# ============================================================================
 
-Write-Host "Resolving UpdateID for:"
-Write-Host "  $kbQuery"
+$updateIds = Resolve-UpdateId `
+    -Kb $selected.KB
 
-$kbHtml = Get-CatalogPage `
-    -Query $kbQuery
+# ============================================================================
+# Resolve actual MSU
+# ============================================================================
 
-# ------------------------------------------------------------
-# Find the selected KB row.
-# ------------------------------------------------------------
+$resolvedDownload = Resolve-MsuDownload `
+    -Kb $selected.KB `
+    -UpdateIds $updateIds
 
-$kbRows = [regex]::Matches(
-    $kbHtml,
-    '<tr[^>]*>(.*?)</tr>',
-    [System.Text.RegularExpressions.RegexOptions]::Singleline
-)
+$selectedUpdateId = $resolvedDownload.UpdateId
+$downloadUrl      = $resolvedDownload.Url
+$fileName         = $resolvedDownload.FileName
 
-$matchingRows = @()
+Write-Section "Resolved Microsoft Package"
 
-foreach ($kbRowMatch in $kbRows) {
+Write-Log "KB       : $($selected.KB)"
+Write-Log "Build    : $($selected.Build)"
+Write-Log "UpdateID : $selectedUpdateId"
+Write-Log "File     : $fileName"
+Write-Log "URL      : $downloadUrl"
 
-    $kbRow = $kbRowMatch.Groups[1].Value
-
-    $kbPlain = [System.Net.WebUtility]::HtmlDecode(
-        ($kbRow -replace '<[^>]+>', ' ')
-    )
-
-    $kbPlain = $kbPlain -replace '\s+', ' '
-    $kbPlain = $kbPlain.Trim()
-
-    if ($kbPlain -notmatch [regex]::Escape($selected.KB)) {
-        continue
-    }
-
-    if ($kbPlain -notmatch '(?i)Windows 11') {
-        continue
-    }
-
-    if ($kbPlain -notmatch '(?i)version 24H2') {
-        continue
-    }
-
-    if ($kbPlain -notmatch '(?i)Cumulative Update') {
-        continue
-    }
-
-    if ($kbPlain -match '(?i)Preview') {
-        continue
-    }
-
-    if ($kbPlain -match '(?i)\.NET') {
-        continue
-    }
-
-    if ($Architecture -eq "x64") {
-
-        if ($kbPlain -notmatch '(?i)x64-based Systems') {
-            continue
-        }
-
-        if ($kbPlain -match '(?i)ARM64') {
-            continue
-        }
-    }
-
-    $matchingRows += [pscustomobject]@{
-        Row   = $kbRow
-        Plain = $kbPlain
-    }
-}
-
-if ($matchingRows.Count -eq 0) {
-
-    throw @"
-Could not find a matching Microsoft Catalog row for:
-
-KB:
-  $($selected.KB)
-
-Architecture:
-  $Architecture
-"@
-}
-
-Write-Host ""
-Write-Host "Matching KB rows: $($matchingRows.Count)"
-
-# ------------------------------------------------------------
-# Extract UpdateID from the selected KB page.
-#
-# The Catalog page normally exposes the GUID in attributes,
-# JavaScript handlers, or input elements.
-# ------------------------------------------------------------
-
-$updateIds = @()
-
-foreach ($match in $matchingRows) {
-
-    $row = $match.Row
-
-    # GUIDs in the row.
-    $guidMatches = [regex]::Matches(
-        $row,
-        '(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
-    )
-
-    foreach ($guidMatch in $guidMatches) {
-
-        $guid = $guidMatch.Groups[1].Value
-
-        if ($updateIds -notcontains $guid) {
-            $updateIds += $guid
-        }
-    }
-}
-
-# ------------------------------------------------------------
-# If the row itself does not expose the GUID, search the entire
-# selected-KB page for Catalog update IDs.
-# ------------------------------------------------------------
-
-if ($updateIds.Count -eq 0) {
-
-    $allGuidMatches = [regex]::Matches(
-        $kbHtml,
-        '(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
-    )
-
-    foreach ($guidMatch in $allGuidMatches) {
-
-        $guid = $guidMatch.Groups[1].Value
-
-        if ($updateIds -notcontains $guid) {
-            $updateIds += $guid
-        }
-    }
-}
-
-if ($updateIds.Count -eq 0) {
-
-    throw @"
-    Could not resolve UpdateID for $($selected.KB).
-
-    Microsoft Catalog returned the KB, but no UpdateID GUID
-    could be extracted.
-
-    Catalog:
-    $(Get-CatalogSearchUrl -Query $kbQuery)
-    "@
-    }
-
-    Write-Host ""
-    Write-Host "UpdateIDs found for $($selected.KB):"
-
-    foreach ($id in $updateIds) {
-        Write-Host "  $id"
-}
-
-# ------------------------------------------------------------
-# Determine which UpdateID actually returns an MSU matching
-# the selected KB and architecture.
-#
-# This is the final protection against the previous problem:
-#
-# KB5129195
-#      ↓
-# wrong UpdateID
-#      ↓
-# KB5043080.msu
-#
-# We reject that combination.
-# ------------------------------------------------------------
-
-$selectedUpdateId = $null
-$downloadUrl = $null
-$fileName = $null
-
-foreach ($updateId in $updateIds) {
-
-    Write-Host ""
-    Write-Host "Testing UpdateID:"
-    Write-Host "  $updateId"
-
-    try {
-
-        $urls = Get-CatalogDownloadUrls `
-            -UpdateId $updateId
-
-        foreach ($url in $urls) {
-
-            try {
-
-                $candidateFileName = Get-FileNameFromUrl `
-                    -Url $url
-
-                Write-Host "  Candidate:"
-                Write-Host "    $candidateFileName"
-
-                if (
-                    $candidateFileName -notmatch '(?i)\.msu$'
-                ) {
-                    Write-Host "    Rejected: not MSU."
-                    continue
-                }
-
-                if (!(Test-MsuFileNameMatchesKb `
-                    -FileName $candidateFileName `
-                    -Kb $selected.KB)) {
-
-                    Write-Host `
-                        "    Rejected: KB does not match $($selected.KB)."
-
-                    continue
-                }
-
-                if (
-                    $Architecture -eq "x64" -and
-                    $candidateFileName -notmatch '(?i)(x64|amd64)'
-                ) {
-
-                    Write-Host `
-                        "    Rejected: architecture does not match x64."
-
-                    continue
-                }
-
-                if (
-                    $Architecture -eq "arm64" -and
-                    $candidateFileName -notmatch '(?i)arm64'
-                ) {
-
-                    Write-Host `
-                        "    Rejected: architecture does not match arm64."
-
-                    continue
-                }
-
-                $selectedUpdateId = $updateId
-                $downloadUrl = $url
-                $fileName = $candidateFileName
-
-                Write-Host "    ACCEPTED"
-
-                break
-            }
-            catch {
-
-                Write-Host `
-                    "    Rejected: $($_.Exception.Message)"
-            }
-        }
-
-        if ($selectedUpdateId) {
-            break
-        }
-    }
-    catch {
-
-        Write-Host `
-            "  UpdateID failed: $($_.Exception.Message)"
-    }
-}
-
-if (!$selectedUpdateId) {
-
-    throw @"
-Could not find a Microsoft Update Catalog UpdateID whose
-download matches the selected update.
-
-Selected KB:
-  $($selected.KB)
-
-Architecture:
-  $Architecture
-
-The resolver intentionally refuses to continue because
-the KB and downloaded MSU could not be correlated safely.
-"@
-}
-
-# ------------------------------------------------------------
-# Save resolved UpdateID back to selected object
-# ------------------------------------------------------------
-
-$selected | Add-Member `
-    -MemberType NoteProperty `
-    -Name UpdateId `
-    -Value $selectedUpdateId `
-    -Force
-
-Write-Host ""
-Write-Host "============================================================"
-Write-Host " Resolved Microsoft Update"
-Write-Host "============================================================"
-Write-Host "KB       : $($selected.KB)"
-Write-Host "Build    : $($selected.Build)"
-Write-Host "Date     : $($selected.Date.ToString('yyyy-MM-dd'))"
-Write-Host "UpdateID : $selectedUpdateId"
-Write-Host "File     : $fileName"
-Write-Host "URL      : $downloadUrl"
-Write-Host ""
-
-# ------------------------------------------------------------
-# Resolve Microsoft download URLs.
-# ------------------------------------------------------------
-
-$downloadUrls = Get-CatalogDownloadUrls `
-    -UpdateId $selected.UpdateId
-
-# ------------------------------------------------------------
-# Find an MSU whose filename matches BOTH:
-#
-#   selected KB
-#   selected architecture
-#
-# Never blindly take the first URL.
-# ------------------------------------------------------------
-
-$downloadUrl = $null
-$fileName = $null
-
-foreach ($url in $downloadUrls) {
-
-    try {
-
-        $candidateFileName = Get-FileNameFromUrl `
-            -Url $url
-
-        Write-Host "Checking download candidate:"
-        Write-Host "  $candidateFileName"
-
-        if (
-            $candidateFileName -notmatch '(?i)\.msu$'
-        ) {
-
-            Write-Host "  Rejected: not an MSU."
-
-            continue
-        }
-
-        if (!(Test-MsuFileNameMatchesKb `
-            -FileName $candidateFileName `
-            -Kb $selected.KB)) {
-
-            Write-Host `
-                "  Rejected: KB does not match $($selected.KB)."
-
-            continue
-        }
-
-        if (
-            $Architecture -eq "x64" -and
-            $candidateFileName -notmatch '(?i)(x64|amd64)'
-        ) {
-
-            Write-Host `
-                "  Rejected: architecture does not match x64."
-
-            continue
-        }
-
-        if (
-            $Architecture -eq "arm64" -and
-            $candidateFileName -notmatch '(?i)arm64'
-        ) {
-
-            Write-Host `
-                "  Rejected: architecture does not match arm64."
-
-            continue
-        }
-
-        $downloadUrl = $url
-        $fileName = $candidateFileName
-
-        Write-Host "  ACCEPTED"
-
-        break
-    }
-    catch {
-
-        Write-Host `
-            "  Rejected: $($_.Exception.Message)"
-    }
-}
-
-if (!$downloadUrl) {
-
-    throw @"
-Could not find an MSU download URL matching the selected update.
-
-Selected KB:
-  $($selected.KB)
-
-Selected UpdateID:
-  $($selected.UpdateId)
-
-Architecture:
-  $Architecture
-
-Microsoft returned:
-$($downloadUrls -join "`n")
-"@
-}
-
-Write-Host ""
-Write-Host "Selected Microsoft package:"
-Write-Host "  File : $fileName"
-Write-Host "  URL  : $downloadUrl"
-Write-Host ""
-
-# ------------------------------------------------------------
+# ============================================================================
 # Artifactory path
-# ------------------------------------------------------------
+#
+# Immutable path:
+#
+# Windows11/24H2/x64/LCU/KBxxxxxxx/file.msu
+# ============================================================================
 
 $relativePath =
     "Windows11/24H2/$Architecture/LCU/$($selected.KB)/$fileName"
@@ -1306,30 +1183,39 @@ $localPackage = Join-Path `
     $fileName
 
 $artifactUrl = $null
+$sourceType  = $null
 
-# ------------------------------------------------------------
-# Check Artifactory first.
-# ------------------------------------------------------------
+# ============================================================================
+# Get artifact
+# ============================================================================
 
-$artifactUrl = Find-ArtifactoryFile `
-    -RelativePath $relativePath
+if (-not $ForceMicrosoftDownload) {
+
+    $artifactUrl = Find-ArtifactoryFile `
+        -RelativePath $relativePath
+}
 
 if ($artifactUrl) {
 
-    Write-Host ""
-    Write-Host "Found LCU in Artifactory:"
-    Write-Host "  $artifactUrl"
+    Write-Section "Use Artifactory Cache"
+
+    Write-Log "Cached artifact found:"
+    Write-Log "  $artifactUrl"
 
     Download-ArtifactoryFile `
         -Url $artifactUrl `
         -Destination $localPackage
+
+    $sourceType = "Artifactory"
 }
 else {
 
-    Write-Host ""
-    Write-Host "LCU is not cached in Artifactory."
-    Write-Host "Downloading from Microsoft..."
-    Write-Host ""
+    Write-Section "Download From Microsoft"
+
+    Write-Log "Artifact is not cached."
+
+    Write-Log "Downloading:"
+    Write-Log "  $downloadUrl"
 
     Invoke-WebRequest `
         -Uri $downloadUrl `
@@ -1337,176 +1223,223 @@ else {
         -UseBasicParsing `
         -TimeoutSec 3600
 
-    if (!(Test-Path -LiteralPath $localPackage -PathType Leaf)) {
-        throw "Microsoft download failed: $localPackage"
+    if (-not (
+        Test-Path `
+            -LiteralPath $localPackage `
+            -PathType Leaf
+    )) {
+        throw "Microsoft download failed."
     }
 
     $length = (
         Get-Item -LiteralPath $localPackage
     ).Length
 
-    if ($length -eq 0) {
-        throw "Microsoft download produced an empty file: $localPackage"
+    if ($length -le 0) {
+        throw "Microsoft returned an empty MSU."
     }
 
-    Write-Host "Downloaded:"
-    Write-Host "  $localPackage"
-    Write-Host "  Size: $length bytes"
+    Write-Log "Downloaded $length bytes."
+
+    $sourceType = "Microsoft"
+
+    # ------------------------------------------------------------------------
+    # Validate BEFORE publishing.
+    # ------------------------------------------------------------------------
+
+    Test-MsuPackage `
+        -MsuPath $localPackage `
+        -ExpectedKb $selected.KB `
+        -ExpectedArchitecture $Architecture
+
+    # ------------------------------------------------------------------------
+    # Calculate SHA before publishing.
+    # ------------------------------------------------------------------------
+
+    $sha256 = Get-Sha256 `
+        -Path $localPackage
+
+    Write-Log "SHA-256: $sha256"
+
+    # ------------------------------------------------------------------------
+    # Publish only after successful validation.
+    # ------------------------------------------------------------------------
 
     if ($ArtifactoryBaseUrl) {
 
         $artifactUrl = Upload-ArtifactoryFile `
             -Source $localPackage `
             -RelativePath $relativePath
+
+        Write-Log "Artifact published:"
+        Write-Log "  $artifactUrl"
+    }
+    else {
+
+        Write-Log `
+            "ArtifactoryBaseUrl not supplied; package remains local." `
+            "WARN"
     }
 }
 
-# ------------------------------------------------------------
-# Validate downloaded/cached MSU.
-#
-# This catches:
-#
-# Selected KB5129195
-# downloaded KB5043080
-# ------------------------------------------------------------
+# ============================================================================
+# Final validation
+# ============================================================================
+
+Write-Section "Final Package Validation"
 
 Test-MsuPackage `
     -MsuPath $localPackage `
     -ExpectedKb $selected.KB `
-    -ExpectedArchitecture $Architecture |
-    Out-Null
-
-# ------------------------------------------------------------
-# SHA-256
-# ------------------------------------------------------------
+    -ExpectedArchitecture $Architecture
 
 $sha256 = Get-Sha256 `
     -Path $localPackage
 
-Write-Host ""
-Write-Host "SHA-256:"
-Write-Host "  $sha256"
-Write-Host ""
+Write-Log "Final SHA-256:"
+Write-Log "  $sha256"
 
-# ------------------------------------------------------------
-# Current Windows 11 24H2 servicing behavior:
-#
-# The LCU includes the required SSU.
-#
-# Therefore resolve one package.
-# ------------------------------------------------------------
+# ============================================================================
+# Manifest
+# ============================================================================
 
-$resolved = @(
-    [pscustomobject]@{
-        type            = "LCU"
-        kb              = $selected.KB
-        build           = $selected.Build
-        architecture    = $Architecture
-        windowsVersion  = "Windows 11 24H2"
-        fileName        = $fileName
-        sha256          = $sha256
-        microsoftUrl    = $downloadUrl
-        artifactoryUrl  = $artifactUrl
-        artifactoryPath = $relativePath
-        updateId        = $selected.UpdateId
-        releaseDate     = $selected.Date.ToString("yyyy-MM-dd")
-        ssuIncluded     = $true
-        resolvedAtUtc   = [datetime]::UtcNow.ToString("o")
-    }
-)
+$resolved = [pscustomobject]@{
+    schemaVersion   = "1.0"
 
-# ------------------------------------------------------------
-# Write manifest.
-# ------------------------------------------------------------
+    type            = "LCU"
+
+    kb              = $selected.KB
+    build           = $selected.Build
+
+    windowsVersion  = "Windows 11 24H2"
+
+    windowsBuild    = $WindowsBuild
+
+    architecture    = $Architecture
+
+    updateId        = $selectedUpdateId
+
+    releaseDate     = $selected.Date.ToString("yyyy-MM-dd")
+
+    fileName        = $fileName
+
+    sha256          = $sha256
+
+    microsoftUrl    = $downloadUrl
+
+    artifactoryUrl  = $artifactUrl
+
+    artifactoryPath = $relativePath
+
+    source          = $sourceType
+
+    ssuIncluded     = $true
+
+    resolvedAtUtc   = [datetime]::UtcNow.ToString("o")
+}
+
+# ============================================================================
+# Write manifest atomically
+# ============================================================================
+
+$tempManifest = "$manifest.tmp"
 
 $resolved |
-    ConvertTo-Json -Depth 10 |
+    ConvertTo-Json -Depth 20 |
     Set-Content `
-        -LiteralPath $manifest `
+        -LiteralPath $tempManifest `
         -Encoding UTF8
 
-if (!(Test-Path -LiteralPath $manifest -PathType Leaf)) {
-    throw "Failed to create resolved update manifest: $manifest"
+Move-Item `
+    -LiteralPath $tempManifest `
+    -Destination $manifest `
+    -Force
+
+if (-not (
+    Test-Path `
+        -LiteralPath $manifest `
+        -PathType Leaf
+)) {
+    throw "Failed to create resolved update manifest."
 }
 
-# ------------------------------------------------------------
-# Validate manifest.
-# ------------------------------------------------------------
+# ============================================================================
+# Manifest validation
+# ============================================================================
 
-try {
+Write-Section "Validate Manifest"
 
-    $manifestObject = Get-Content `
+$manifestObject =
+    Get-Content `
         -LiteralPath $manifest `
         -Raw |
-        ConvertFrom-Json
+    ConvertFrom-Json
 
-    if ($null -eq $manifestObject) {
-        throw "Manifest contains no updates."
-    }
-
-    $manifestUpdate = @($manifestObject)[0]
-
-    if ($manifestUpdate.kb -ne $selected.KB) {
-        throw "Manifest KB mismatch."
-    }
-
-    if ($manifestUpdate.fileName -ne $fileName) {
-        throw "Manifest filename mismatch."
-    }
-
-    if (
-        $manifestUpdate.sha256.ToLowerInvariant() -ne
-        $sha256.ToLowerInvariant()
-    ) {
-        throw "Manifest SHA-256 mismatch."
-    }
-
-    if ($manifestUpdate.updateId -ne $selected.UpdateId) {
-        throw "Manifest UpdateID mismatch."
-    }
-}
-catch {
-
-    throw `
-        "Manifest validation failed: $($_.Exception.Message)"
+if ($manifestObject.kb -ne $selected.KB) {
+    throw "Manifest KB mismatch."
 }
 
-# ------------------------------------------------------------
-# Final output
-# ------------------------------------------------------------
+if ($manifestObject.fileName -ne $fileName) {
+    throw "Manifest filename mismatch."
+}
 
-Write-Host ""
-Write-Host "============================================================"
-Write-Host " Update resolution complete"
-Write-Host "============================================================"
-Write-Host ""
-Write-Host "Selected LCU:"
-Write-Host "  KB           : $($selected.KB)"
-Write-Host "  Build        : $($selected.Build)"
-Write-Host "  Architecture : $Architecture"
-Write-Host "  Release      : $($selected.Date.ToString('yyyy-MM-dd'))"
-Write-Host "  UpdateID     : $($selected.UpdateId)"
-Write-Host ""
-Write-Host "Package:"
-Write-Host "  File         : $fileName"
-Write-Host "  SHA-256      : $sha256"
-Write-Host ""
-Write-Host "Microsoft:"
-Write-Host "  URL          : $downloadUrl"
-Write-Host ""
-Write-Host "Artifactory:"
-Write-Host "  URL          : $artifactUrl"
-Write-Host "  Path         : $relativePath"
-Write-Host ""
-Write-Host "SSU:"
-Write-Host "  Included in LCU: YES"
-Write-Host ""
-Write-Host "Manifest:"
-Write-Host "  $manifest"
-Write-Host ""
-Write-Host "============================================================"
-Write-Host " Resolved manifest"
-Write-Host "============================================================"
+if ($manifestObject.updateId -ne $selectedUpdateId) {
+    throw "Manifest UpdateID mismatch."
+}
 
-Get-Content `
-    -LiteralPath $manifest
+if (
+    $manifestObject.sha256.ToLowerInvariant() -ne
+    $sha256.ToLowerInvariant()
+) {
+    throw "Manifest SHA-256 mismatch."
+}
+
+if (
+    $manifestObject.artifactoryPath -ne
+    $relativePath
+) {
+    throw "Manifest Artifactory path mismatch."
+}
+
+Write-Log "Manifest validation: PASS"
+
+# ============================================================================
+# Final
+# ============================================================================
+
+Write-Section "Update Resolution Complete"
+
+Write-Log "Selected LCU"
+Write-Log "  KB           : $($selected.KB)"
+Write-Log "  Build        : $($selected.Build)"
+Write-Log "  Architecture : $Architecture"
+Write-Log "  Release      : $($selected.Date.ToString('yyyy-MM-dd'))"
+Write-Log "  UpdateID     : $selectedUpdateId"
+
+Write-Log ""
+Write-Log "Package"
+Write-Log "  File         : $fileName"
+Write-Log "  SHA-256      : $sha256"
+Write-Log "  Source       : $sourceType"
+
+Write-Log ""
+Write-Log "Microsoft"
+Write-Log "  URL          : $downloadUrl"
+
+Write-Log ""
+Write-Log "Artifactory"
+Write-Log "  URL          : $artifactUrl"
+Write-Log "  Path         : $relativePath"
+
+Write-Log ""
+Write-Log "Servicing"
+Write-Log "  SSU included : YES"
+
+Write-Log ""
+Write-Log "Manifest"
+Write-Log "  $manifest"
+
+Write-Log ""
+Write-Log "Result: SUCCESS"
+
+exit 0
