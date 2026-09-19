@@ -1,152 +1,134 @@
 def call(Map cfg = [:]) {
 
-    def workRoot = cfg.workRoot
-    def baseIsoPath = cfg.baseIsoPath
-    def windowsBuild = cfg.windowsBuild ?: '26100'
-    def architecture = cfg.architecture ?: 'x64'
-    def artifactoryBaseUrl = cfg.artifactoryBaseUrl ?: ''
-    def artifactoryRepo = cfg.artifactoryRepo ?: 'windows-updates'
+    def workRoot =
+        cfg.workRoot
+
+    def baseIsoArtifact =
+        cfg.baseIsoArtifact
+
+    def baseIsoSha256 =
+        cfg.baseIsoSha256 ?: ''
+
+    def windowsBuild =
+        cfg.windowsBuild ?: '26100'
+
+    def architecture =
+        cfg.architecture ?: 'x64'
+
+    def updateManifestUrl =
+        cfg.updateManifestUrl ?: ''
+
+    def updateManifestFile =
+        cfg.updateManifestFile ?: ''
+
+    def artifactoryBaseUrl =
+        cfg.artifactoryBaseUrl
+
+    def artifactoryRepo =
+        cfg.artifactoryRepo ?: 'snapshot-generic-local'
+
 
     if (!workRoot?.trim()) {
         error 'workRoot is required'
     }
 
-    if (!baseIsoPath?.trim()) {
-        error 'baseIsoPath is required'
+    if (!baseIsoArtifact?.trim()) {
+        error 'baseIsoArtifact is required'
     }
 
-    echo '============================================================'
-    echo ' Windows Image Download / Update Resolution'
-    echo '============================================================'
-    echo "Work root       : ${workRoot}"
-    echo "Base ISO        : ${baseIsoPath}"
-    echo "Windows build   : ${windowsBuild}"
-    echo "Architecture    : ${architecture}"
-    echo "Artifactory     : ${artifactoryBaseUrl}"
-    echo "Repository      : ${artifactoryRepo}"
+    if (!artifactoryBaseUrl?.trim()) {
+        error 'artifactoryBaseUrl is required'
+    }
 
-    def downloadDir = "${workRoot}\\download"
-    def baseIso = "${downloadDir}\\base.iso"
 
-    powershell(
-        '''
-$ErrorActionPreference = 'Stop'
+    /*
+     * Load scripts from the Shared Library.
+     */
 
-$sourceIso = '__SOURCE_ISO__'
-$downloadDir = '__DOWNLOAD_DIR__'
-$baseIso = '__BASE_ISO__'
-
-Write-Host "Checking source ISO..."
-Write-Host "  $sourceIso"
-
-if (!(Test-Path -LiteralPath $sourceIso -PathType Leaf)) {
-    throw "Base ISO not found: $sourceIso"
-}
-
-New-Item `
-    -ItemType Directory `
-    -Force `
-    -Path $downloadDir | Out-Null
-
-Write-Host "Copying base ISO..."
-Write-Host "  Source      : $sourceIso"
-Write-Host "  Destination : $baseIso"
-
-Copy-Item `
-    -LiteralPath $sourceIso `
-    -Destination $baseIso `
-    -Force
-
-if (!(Test-Path -LiteralPath $baseIso -PathType Leaf)) {
-    throw "Failed to stage base ISO: $baseIso"
-}
-
-$hash = Get-FileHash `
-    -LiteralPath $baseIso `
-    -Algorithm SHA256
-
-Write-Host "Base ISO staged successfully."
-Write-Host "SHA-256: $($hash.Hash)"
-'''
-        .replace('__SOURCE_ISO__', baseIsoPath)
-        .replace('__DOWNLOAD_DIR__', downloadDir)
-        .replace('__BASE_ISO__', baseIso)
+    def downloadScript = libraryResource(
+        'scripts/windows-image/download.ps1'
     )
 
-    def resolver = libraryResource(
+    def resolverScript = libraryResource(
         'scripts/windows-image/resolve-updates.ps1'
     )
 
+
+    /*
+     * Put both scripts in the Jenkins workspace.
+     *
+     * download.ps1 must not assume that resources/scripts/windows-image
+     * exists on the agent.
+     */
+
+    def downloadScriptPath =
+        "${env.WORKSPACE}\\download-windows-image.ps1"
+
+    def resolverScriptPath =
+        "${env.WORKSPACE}\\resolve-updates.ps1"
+
+
     writeFile(
-        file: 'resolve-updates.ps1',
-        text: resolver
+        file: downloadScriptPath,
+        text: downloadScript
     )
+
+    writeFile(
+        file: resolverScriptPath,
+        text: resolverScript
+    )
+
+
+    echo """
+============================================================
+ Windows Image Download
+============================================================
+
+WorkRoot:
+  ${workRoot}
+
+Base ISO:
+  ${baseIsoArtifact}
+
+Artifactory Repository:
+  ${artifactoryRepo}
+
+Download Script:
+  ${downloadScriptPath}
+
+Resolver Script:
+  ${resolverScriptPath}
+
+============================================================
+"""
+
 
     powershell(
         '''
 $ErrorActionPreference = 'Stop'
 
-& '__WORKSPACE__\\resolve-updates.ps1' `
+& '__DOWNLOAD_SCRIPT_PATH__' `
     -WorkRoot '__WORK_ROOT__' `
+    -BaseIsoArtifact '__BASE_ISO_ARTIFACT__' `
+    -BaseIsoSha256 '__BASE_ISO_SHA256__' `
     -WindowsBuild '__WINDOWS_BUILD__' `
     -Architecture '__ARCHITECTURE__' `
-    -ArtifactoryBaseUrl '__ARTIFACTORY_URL__' `
-    -ArtifactoryRepo '__ARTIFACTORY_REPO__'
+    -UpdateManifestUrl '__UPDATE_MANIFEST_URL__' `
+    -UpdateManifestFile '__UPDATE_MANIFEST_FILE__' `
+    -ArtifactoryBaseUrl '__ARTIFACTORY_BASE_URL__' `
+    -ArtifactoryRepo '__ARTIFACTORY_REPO__' `
+    -ResolverScriptPath '__RESOLVER_SCRIPT_PATH__'
 '''
-        .replace('__WORKSPACE__', env.WORKSPACE)
+        .replace('__DOWNLOAD_SCRIPT_PATH__', downloadScriptPath)
         .replace('__WORK_ROOT__', workRoot)
-        .replace('__WINDOWS_BUILD__', windowsBuild)
+        .replace('__BASE_ISO_ARTIFACT__', baseIsoArtifact)
+        .replace('__BASE_ISO_SHA256__', baseIsoSha256)
+        .replace('__WINDOWS_BUILD__', windowsBuild.toString())
         .replace('__ARCHITECTURE__', architecture)
-        .replace('__ARTIFACTORY_URL__', artifactoryBaseUrl)
+        .replace('__UPDATE_MANIFEST_URL__', updateManifestUrl)
+        .replace('__UPDATE_MANIFEST_FILE__', updateManifestFile)
+        .replace('__ARTIFACTORY_BASE_URL__', artifactoryBaseUrl)
         .replace('__ARTIFACTORY_REPO__', artifactoryRepo)
-    )
-
-    powershell(
-        '''
-$ErrorActionPreference = 'Stop'
-
-$manifest = '__MANIFEST__'
-$updateDir = '__UPDATE_DIR__'
-
-Write-Host "Verifying resolved update files..."
-
-if (!(Test-Path -LiteralPath $manifest -PathType Leaf)) {
-    throw "Resolved update manifest was not created: $manifest"
-}
-
-if (!(Test-Path -LiteralPath $updateDir -PathType Container)) {
-    throw "Update directory was not created: $updateDir"
-}
-
-$updates = @(
-    Get-ChildItem -LiteralPath $updateDir -File |
-    Where-Object {
-        $_.Extension -in @('.msu', '.cab')
-    }
-)
-
-if ($updates.Count -eq 0) {
-    throw "No update packages were resolved in: $updateDir"
-}
-
-Write-Host "Resolved update packages:"
-
-foreach ($update in $updates) {
-
-    $hash = Get-FileHash `
-        -LiteralPath $update.FullName `
-        -Algorithm SHA256
-
-    Write-Host "  $($update.Name)"
-    Write-Host "    Size   : $([math]::Round($update.Length / 1MB, 2)) MB"
-    Write-Host "    SHA256 : $($hash.Hash)"
-}
-
-Write-Host ""
-Write-Host "Resolved update manifest:"
-Get-Content -LiteralPath $manifest
-'''
-        .replace('__MANIFEST__', "${downloadDir}\\resolved-updates.json")
-        .replace('__UPDATE_DIR__', "${downloadDir}\\updates")
+        .replace('__RESOLVER_SCRIPT_PATH__', resolverScriptPath)
     )
 }

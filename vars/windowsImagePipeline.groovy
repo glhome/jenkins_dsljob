@@ -1,64 +1,103 @@
 def call(Map cfg = [:]) {
 
-    def baseIsoPath       = cfg.baseIsoPath
-    def baseIsoSha256     = cfg.baseIsoSha256 ?: ''
-    def windowsBuild      = cfg.windowsBuild ?: '26100'
-    def architecture      = cfg.architecture ?: 'x64'
-    def updateManifestUrl = cfg.updateManifestUrl ?: ''
-    def updateManifestFile = cfg.updateManifestFile ?: ''
-    def artifactoryBaseUrl = cfg.artifactoryBaseUrl ?: ''
-    def artifactoryRepo   = cfg.artifactoryRepo ?: 'windows-updates'
-    def imageIndex        = cfg.imageIndex ?: 1
-    def outputName        = cfg.outputName ?: 'Windows-Custom'
-    def agentLabel        = cfg.agentLabel ?: 'windows-image-builder'
-    def keepWorkspace     = cfg.keepWorkspace ?: false
+    def baseIsoArtifact =
+        cfg.baseIsoArtifact
 
-    if (!baseIsoPath?.trim()) {
-        error 'baseIsoPath is required'
+    def baseIsoSha256 =
+        cfg.baseIsoSha256 ?: ''
+
+    def windowsBuild =
+        cfg.windowsBuild ?: '26100'
+
+    def architecture =
+        cfg.architecture ?: 'x64'
+
+    def updateManifestUrl =
+        cfg.updateManifestUrl ?: ''
+
+    def updateManifestFile =
+        cfg.updateManifestFile ?: ''
+
+    def artifactoryBaseUrl =
+        cfg.artifactoryBaseUrl ?: ''
+
+    def artifactoryRepo =
+        cfg.artifactoryRepo ?: 'snapshot-generic-local'
+
+    def imageIndex =
+        cfg.imageIndex ?: 1
+
+    def outputName =
+        cfg.outputName ?: 'Windows-Custom'
+
+    def agentLabel =
+        cfg.agentLabel ?: 'windows-image-builder'
+
+    def keepWorkspace =
+        cfg.keepWorkspace ?: false
+
+
+    if (!baseIsoArtifact?.trim()) {
+        error 'baseIsoArtifact is required'
     }
+
+    if (!artifactoryBaseUrl?.trim()) {
+        error 'artifactoryBaseUrl is required'
+    }
+
 
     node(agentLabel) {
 
-        // IMPORTANT:
-        // WorkRoot is the Jenkins workspace itself.
-        // Do NOT append \\windows-image here.
+        /*
+         * env.WORKSPACE is the authoritative Jenkins workspace.
+         *
+         * Jenkins may assign:
+         *
+         *   windows-image
+         *   windows-image@2
+         *   windows-image@3
+         *
+         * Do not construct or modify this path.
+         */
+
         def workRoot = env.WORKSPACE
+
 
         echo """
 ============================================================
  Windows Image Factory
 ============================================================
- Agent:
-   ${env.NODE_NAME}
 
- Workspace:
-   ${env.WORKSPACE}
+Agent:
+  ${env.NODE_NAME}
 
- WorkRoot:
-   ${workRoot}
+Workspace:
+  ${env.WORKSPACE}
 
- Base ISO:
-   ${baseIsoPath}
+WorkRoot:
+  ${workRoot}
 
- Windows Build:
-   ${windowsBuild}
+Base ISO Artifact:
+  ${baseIsoArtifact}
 
- Architecture:
-   ${architecture}
+Artifactory Repository:
+  ${artifactoryRepo}
 
- Artifactory:
-   ${artifactoryBaseUrl}
+Windows Build:
+  ${windowsBuild}
 
- Repository:
-   ${artifactoryRepo}
+Architecture:
+  ${architecture}
 
- Image Index:
-   ${imageIndex}
+Image Index:
+  ${imageIndex}
 
- Output:
-   ${outputName}
+Output:
+  ${outputName}
+
 ============================================================
 """
+
 
         try {
 
@@ -69,11 +108,12 @@ def call(Map cfg = [:]) {
                 )
             }
 
+
             stage('Download Base ISO and Updates') {
 
                 windowsImageDownload(
                     workRoot: workRoot,
-                    baseIsoPath: baseIsoPath,
+                    baseIsoArtifact: baseIsoArtifact,
                     baseIsoSha256: baseIsoSha256,
                     windowsBuild: windowsBuild,
                     architecture: architecture,
@@ -84,6 +124,7 @@ def call(Map cfg = [:]) {
                 )
             }
 
+
             stage('Extract Windows Image') {
 
                 windowsImageExtract(
@@ -91,6 +132,7 @@ def call(Map cfg = [:]) {
                     imageIndex: imageIndex
                 )
             }
+
 
             stage('Service Windows Image') {
 
@@ -100,6 +142,7 @@ def call(Map cfg = [:]) {
                 )
             }
 
+
             stage('Create ISO') {
 
                 windowsImageCreateIso(
@@ -107,6 +150,7 @@ def call(Map cfg = [:]) {
                     outputName: outputName
                 )
             }
+
 
             stage('Generate Manifest') {
 
@@ -119,18 +163,11 @@ def call(Map cfg = [:]) {
         }
         finally {
 
-            if (!keepWorkspace) {
+            if (keepWorkspace) {
 
-                echo "Workspace cleanup is enabled."
+                echo "KEEP_WORKSPACE=true"
+                echo "Preserving workspace: ${workRoot}"
 
-                // Do not blindly delete the workspace here.
-                // The service script is responsible for DISM cleanup.
-                // Jenkins Workspace Cleanup can be added separately.
-            }
-            else {
-
-                echo "KEEP_WORKSPACE=true - preserving:"
-                echo workRoot
             }
         }
     }

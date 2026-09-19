@@ -1,8 +1,8 @@
-folder('utilities')
-
 pipelineJob('utilities/windows-image') {
 
-    description('Builds a serviced Windows ISO by applying SSU and LCU updates to an immutable Microsoft base Windows image.')
+    description(
+        'Builds a serviced Windows ISO from an immutable Artifactory base ISO.'
+    )
 
     logRotator {
         numToKeep(20)
@@ -12,21 +12,21 @@ pipelineJob('utilities/windows-image') {
     parameters {
 
         stringParam(
-            'BASE_ISO_PATH',
-            'E:\\en-us_windows_11_iot_enterprise_version_24h2_x64_dvd_3a99b72b.iso',
-            'Base Windows ISO on the build agent'
+            'BASE_ISO_ARTIFACT',
+            'Windows11/24H2/x64/base/en-us_windows_11_iot_enterprise_version_24h2_x64_dvd_3a99b72b.iso',
+            'Immutable base Windows ISO path in Artifactory'
         )
 
         stringParam(
             'BASE_ISO_SHA256',
             '',
-            'Optional SHA-256 checksum for the base ISO'
+            'Expected SHA-256 checksum of the base ISO'
         )
 
         stringParam(
             'WINDOWS_BUILD',
             '26100',
-            'Windows build number, for example 26100'
+            'Windows build number'
         )
 
         stringParam(
@@ -38,13 +38,13 @@ pipelineJob('utilities/windows-image') {
         stringParam(
             'UPDATE_MANIFEST_URL',
             '',
-            'URL of the update-selection manifest containing applicable SSU/LCU updates'
+            'Optional update-selection manifest URL'
         )
 
         stringParam(
             'UPDATE_MANIFEST_FILE',
             '',
-            'Optional workspace path to an update-selection manifest'
+            'Optional workspace update-selection manifest'
         )
 
         stringParam(
@@ -55,20 +55,20 @@ pipelineJob('utilities/windows-image') {
 
         stringParam(
             'ARTIFACTORY_REPO',
-            'windows-updates',
-            'Immutable Artifactory repository used to cache Microsoft update packages'
+            'snapshot-generic-local',
+            'Artifactory repository containing Windows base ISOs and updates'
         )
 
         stringParam(
             'IMAGE_INDEX',
             '1',
-            'install.wim image index to service'
+            'install.wim image index'
         )
 
         stringParam(
             'OUTPUT_NAME',
             'Windows-Custom',
-            'Output ISO file name without extension'
+            'Output ISO name without extension'
         )
 
         stringParam(
@@ -80,35 +80,33 @@ pipelineJob('utilities/windows-image') {
         booleanParam(
             'KEEP_WORKSPACE',
             false,
-            'Keep the image workspace after the build'
+            'Keep image workspace after the build'
         )
     }
 
     definition {
+
         cps {
+
             script('''
 @Library('jenkins_dsljob') _
 
 windowsImagePipeline(
-    baseIsoPath: params.BASE_ISO_PATH,
+    baseIsoArtifact: params.BASE_ISO_ARTIFACT,
     baseIsoSha256: params.BASE_ISO_SHA256,
-
     windowsBuild: params.WINDOWS_BUILD,
     architecture: params.ARCHITECTURE,
-
     updateManifestUrl: params.UPDATE_MANIFEST_URL,
     updateManifestFile: params.UPDATE_MANIFEST_FILE,
-
     artifactoryBaseUrl: params.ARTIFACTORY_BASE_URL,
     artifactoryRepo: params.ARTIFACTORY_REPO,
-
     imageIndex: params.IMAGE_INDEX,
     outputName: params.OUTPUT_NAME,
-
     agentLabel: params.AGENT_LABEL,
     keepWorkspace: params.KEEP_WORKSPACE
 )
 '''.stripIndent())
+
             sandbox()
         }
     }
