@@ -4,7 +4,7 @@ def call(Map cfg = [:]) {
         cfg.baseIsoArtifact
 
     def baseIsoSha256 =
-        cfg.baseIsoSha256 ?: ''
+        cfg.baseIsoSha256 ?: 'eceb8dc167077e07f9a9bd04e472ea542944974b81b2ebc25477772a71bdbb69'
 
     def windowsBuild =
         cfg.windowsBuild ?: '26100'
@@ -19,7 +19,7 @@ def call(Map cfg = [:]) {
         cfg.updateManifestFile ?: ''
 
     def artifactoryBaseUrl =
-        cfg.artifactoryBaseUrl ?: ''
+        cfg.artifactoryBaseUrl ?: 'http://localhost:8082'
 
     def artifactoryRepo =
         cfg.artifactoryRepo ?: 'snapshot-generic-local'

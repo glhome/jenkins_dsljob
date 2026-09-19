@@ -172,11 +172,15 @@ function Get-ArtifactoryArtifact {
     $uri = Get-ArtifactoryUrl -ArtifactPath $ArtifactPath
 
     Write-Host ''
-    Write-Host 'Artifactory download'
-    Write-Host "  Repository : $ArtifactoryRepo"
-    Write-Host "  Artifact   : $ArtifactPath"
-    Write-Host "  Destination: $DestinationPath"
-    Write-Host "  URL        : $uri"
+    Write-Host 'DEBUG Artifactory request'
+    Write-Host "  URI              = [$uri]"
+    Write-Host "  User             = [$ArtifactoryUser]"
+    Write-Host "  User length      = $($ArtifactoryUser.Length)"
+    Write-Host "  Password supplied= $([bool]$ArtifactoryPassword)"
+    Write-Host "  Header present   = $($headers.ContainsKey('Authorization'))"
+    Write-Host "  ComputerName     = $env:COMPUTERNAME"
+    Write-Host "  UserName         = $env:USERNAME"
+    Write-Host "  Identity         = $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
 
     # --------------------------------------------------------
     # Reuse existing local file when checksum matches
@@ -238,8 +242,9 @@ function Get-ArtifactoryArtifact {
             -Headers $headers `
             -Method Get `
             -OutFile $DestinationPath `
-            -UseBasicParsing
-
+            -UseBasicParsing `
+            -Verbose
+            
         Write-Host "  HTTP Status: $($response.StatusCode)"
     }
     catch {
