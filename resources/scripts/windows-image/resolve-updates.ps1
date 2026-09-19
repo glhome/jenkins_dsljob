@@ -1596,31 +1596,31 @@ Write-Log "  Architecture : $Architecture"
 Write-Log "  Release      : $($selected.Date.ToString('yyyy-MM-dd'))"
 Write-Log "  UpdateID     : $selectedUpdateId"
 
-Write-Log ''
+Write-Host ''
 Write-Log 'Package'
 Write-Log "  File         : $fileName"
 Write-Log "  SHA-256      : $sha256"
 Write-Log "  Source       : $sourceType"
 
-Write-Log ''
+Write-Host ''
 Write-Log 'Microsoft'
 Write-Log "  URL          : $downloadUrl"
 
-Write-Log ''
+Write-Host ''
 Write-Log 'Artifactory'
 Write-Log "  Repository   : $ArtifactoryRepo"
 Write-Log "  URL          : $artifactUrl"
 Write-Log "  Path         : $relativePath"
 
-Write-Log ''
+Write-Host ''
 Write-Log 'Servicing'
 Write-Log '  SSU included : YES'
 
-Write-Log ''
+Write-Host ''
 Write-Log 'Manifest'
 Write-Log "  $manifest"
 
-Write-Log ''
+Write-Host ''
 Write-Log 'Result: SUCCESS'
 
 exit 0
