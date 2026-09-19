@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$BaseIsoArtifact,
 
-    [string]$BaseIsoSha256 = 'eceb8dc167077e07f9a9bd04e472ea542944974b81b2ebc25477772a71bdbb69',
+    [string]$BaseIsoSha256 = '',
 
     [string]$WindowsBuild = '26100',
 
@@ -17,7 +17,7 @@ param(
     [string]$UpdateManifestFile = '',
 
     [Parameter(Mandatory = $true)]
-    [string]$ArtifactoryBaseUrl = 'http://localhost:8082', 
+    [string]$ArtifactoryBaseUrl = '', 
 
     [Parameter(Mandatory = $true)]
     [string]$ArtifactoryRepo = 'snapshot-generic-local',
@@ -244,7 +244,7 @@ function Get-ArtifactoryArtifact {
             -OutFile $DestinationPath `
             -UseBasicParsing `
             -Verbose
-            
+
         Write-Host "  HTTP Status: $($response.StatusCode)"
     }
     catch {

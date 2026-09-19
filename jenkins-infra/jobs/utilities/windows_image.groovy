@@ -19,7 +19,7 @@ pipelineJob('utilities/windows-image') {
 
         stringParam(
             'BASE_ISO_SHA256',
-            '',
+            'eceb8dc167077e07f9a9bd04e472ea542944974b81b2ebc25477772a71bdbb69',
             'Expected SHA-256 checksum of the base ISO'
         )
 
@@ -49,7 +49,7 @@ pipelineJob('utilities/windows-image') {
 
         stringParam(
             'ARTIFACTORY_BASE_URL',
-            '',
+            'http://localhost:8082/',
             'JFrog Artifactory base URL'
         )
 
