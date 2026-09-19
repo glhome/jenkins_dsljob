@@ -598,19 +598,12 @@ Actual   : $actualHash
 "@
     }
 
-    if (
-        $update.fileName.ToLowerInvariant() -
-        notmatch $update.kb.ToLowerInvariant()
-    ) {
+   $updateFileName = [System.IO.Path]::GetFileName($update.fileName)
+    $expectedKb = $update.kb.ToString()
 
-        throw @"
-Resolved update filename does not contain the expected KB.
-
-KB       : $($update.kb)
-Filename : $($update.fileName)
-"@
+    if ($updateFileName -notmatch "(?i)$([regex]::Escape($expectedKb))") {
+        throw "Resolved update filename '$updateFileName' does not contain expected KB '$expectedKb'."
     }
-
     Write-Host '  SHA256 verification: PASS'
 }
 
