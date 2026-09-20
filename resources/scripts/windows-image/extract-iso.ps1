@@ -35,27 +35,15 @@ if (-not (Test-Path -LiteralPath $BaseIso)) {
     throw "Base ISO not found: $BaseIso"
 }
 
-New-Item `
-    -ItemType Directory `
-    -Force `
-    -Path $SourceDir | Out-Null
-
-# ------------------------------------------------------------
-# Mount ISO
-# ------------------------------------------------------------
+New-Item -ItemType Directory -Force -Path $SourceDir | Out-Null
 
 Write-Host ""
 Write-Host "Mounting ISO..."
 
-$diskImage = Mount-DiskImage `
-    -ImagePath $BaseIso `
-    -PassThru
-
+$diskImage = Mount-DiskImage -ImagePath $BaseIso -PassThru
 Start-Sleep -Seconds 2
 
-$volume = $diskImage |
-    Get-Volume |
-    Select-Object -First 1
+$volume = $diskImage | Get-Volume | Select-Object -First 1
 
 if (-not $volume) {
     throw "Unable to determine mounted ISO volume."
@@ -66,53 +54,26 @@ $isoDrive = "$($volume.DriveLetter):"
 Write-Host "ISO mounted at:"
 Write-Host "  $isoDrive"
 
-# ------------------------------------------------------------
-# Copy ISO contents
-# ------------------------------------------------------------
-
 Write-Host ""
 Write-Host "Copying ISO contents..."
 
-robocopy `
-    "$isoDrive\" `
-    $SourceDir `
-    /E `
-    /COPY:DAT `
-    /R:2 `
-    /W:2 `
-    /NFL `
-    /NDL
-
+robocopy "$isoDrive\" $SourceDir /E /COPY:DAT /R:2 /W:2 /NFL /NDL
 $robocopyCode = $LASTEXITCODE
 
 if ($robocopyCode -ge 8) {
     throw "Robocopy failed with exit code $robocopyCode."
 }
 
-# ------------------------------------------------------------
-# Dismount ISO
-# ------------------------------------------------------------
-
 Write-Host ""
 Write-Host "Dismounting ISO..."
-
-Dismount-DiskImage `
-    -ImagePath $BaseIso
-
-# ------------------------------------------------------------
-# Verify WIM
-# ------------------------------------------------------------
+Dismount-DiskImage -ImagePath $BaseIso
 
 $WimFile = Join-Path $SourceDir 'sources\install.wim'
 
 if (-not (Test-Path -LiteralPath $WimFile)) {
-
     $EsdFile = Join-Path $SourceDir 'sources\install.esd'
 
     if (Test-Path -LiteralPath $EsdFile) {
-
-        Write-Host "install.esd detected."
-
         throw @"
 The ISO contains install.esd instead of install.wim.
 
@@ -125,16 +86,39 @@ Convert install.esd to install.wim before continuing.
 }
 
 # ------------------------------------------------------------
-# Display image information
+# Normalize extracted WIM permissions/attributes
 # ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Normalizing extracted WIM permissions..."
+
+$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$jenkinsIdentity = $currentIdentity.Name
+
+Write-Host "Running as:"
+Write-Host "  $jenkinsIdentity"
+
+& icacls.exe $SourceDir /grant "${jenkinsIdentity}:(OI)(CI)(M)" /T /C
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to grant Modify permission on extracted source tree."
+}
+
+# ISO media commonly carries read-only attributes. DISM requires the
+# WIM to be writable when mounting it for servicing.
+& attrib.exe -R $WimFile
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to remove read-only attribute from install.wim."
+}
+
+Write-Host "WIM is writable:"
+Write-Host "  $WimFile"
 
 Write-Host ""
 Write-Host "Windows image information:"
 
-& dism.exe `
-    /English `
-    /Get-WimInfo `
-    "/WimFile:$WimFile"
+& dism.exe /English /Get-WimInfo "/WimFile:$WimFile"
 
 if ($LASTEXITCODE -ne 0) {
     throw "Unable to inspect install.wim."
