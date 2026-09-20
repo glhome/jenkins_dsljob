@@ -327,6 +327,7 @@ function Get-ArtifactoryArtifact {
             $artifactSpec `
             "$destinationDirectory\" `
             --server-id=local-artifactory `
+            --threadiness=8 `
             --flat=true
 
         if ($LASTEXITCODE -ne 0) {
