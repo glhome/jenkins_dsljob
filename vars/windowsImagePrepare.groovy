@@ -53,8 +53,8 @@ if ($dismText -match [regex]::Escape($mountDir)) {
     Write-Host "  $mountDir"
     Write-Host ""
 
-    $needsRemount = $dismText -match '(?i)Status\s*:\s*Needs Remount'
-    $isInvalid    = $dismText -match '(?i)Status\s*:\s*Invalid'
+    $needsRemount = $dismText -match '(?i)Status\\s*:\\s*Needs Remount'
+    $isInvalid    = $dismText -match '(?i)Status\\s*:\\s*Invalid'
 
     if ($needsRemount -or $isInvalid) {
         Write-Host "Mount is stale or requires remount."
