@@ -207,7 +207,7 @@ if (-not $manifest) {
     throw "Update manifest is empty."
 }
 
-$updates = @($manifest.updates)
+$updates = @($manifest)
 
 if ($updates.Count -eq 0) {
     throw "No updates found in resolved-updates.json."
