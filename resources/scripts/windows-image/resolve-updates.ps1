@@ -610,31 +610,26 @@ function Upload-ArtifactoryFile {
         return $existing
     }
 
-    $headers =
-        Get-ArtifactoryHeaders
+    Write-Log "Publishing immutable artifact using JFrog CLI:"
+    Write-Log "  Repository: $ArtifactoryRepo"
+    Write-Log "  Path:       $artifactoryPath"
 
-    Write-Log 'Publishing immutable artifact:'
-    Write-Log "  $url"
+    $artifactSpec = "$ArtifactoryRepo/$artifactoryPath"
 
-    Invoke-WebRequest `
-        -Uri $url `
-        -Method Put `
-        -InFile $Source `
-        -Headers $headers `
-        -ContentType 'application/octet-stream' `
-        -UseBasicParsing `
-        -TimeoutSec 3600
+    & jf rt u `
+        $localFile `
+        $artifactSpec `
+        --server-id=local-artifactory `
+        --flat=true `
+        --detailed-summary
 
-    $verified =
-        Find-ArtifactoryFile `
-            -RelativePath $RelativePath
-
-    if (-not $verified) {
-        throw `
-            "Artifact upload could not be verified: $url"
+    if ($LASTEXITCODE -ne 0) {
+        throw "JFrog CLI upload failed with exit code $LASTEXITCODE"
     }
 
-    return $verified
+    Write-Log "Artifactory publish completed successfully."
+
+    return $LASTEXITCODE
 }
 
 # ============================================================
