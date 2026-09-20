@@ -128,7 +128,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Failed to grant Modify permission on mount directory."
 }
 
-$wimFile = Join-Path $sourceDir 'sources\install.wim'
+$wimFile = Join-Path $sourceDir 'sources\\install.wim'
 
 if (Test-Path -LiteralPath $wimFile) {
     Write-Host "Existing install.wim detected. Removing read-only attribute..."
