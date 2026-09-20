@@ -588,10 +588,6 @@ function Upload-ArtifactoryFile {
         [string]$RelativePath
     )
 
-    $url =
-        Get-ArtifactoryUrl `
-            -RelativePath $RelativePath
-
     # --------------------------------------------------------
     # Immutable repository behavior:
     #
@@ -610,14 +606,34 @@ function Upload-ArtifactoryFile {
         return $existing
     }
 
-    Write-Log "Publishing immutable artifact using JFrog CLI:"
-    Write-Log "  Repository: $ArtifactoryRepo"
-    Write-Log "  Path:       $artifactoryPath"
+    # --------------------------------------------------------
+    # Build JFrog CLI artifact specification.
+    #
+    # Repository:
+    #   snapshot-generic-local
+    #
+    # Relative path:
+    #   Windows11/24H2/x64/LCU/KB5129195/<file>
+    #
+    # Final:
+    #   snapshot-generic-local/Windows11/24H2/x64/LCU/KB5129195/<file>
+    # --------------------------------------------------------
 
-    $artifactSpec = "$ArtifactoryRepo/$artifactoryPath"
+    $artifactSpec =
+        "$ArtifactoryRepo/$RelativePath"
+
+    Write-Log 'Publishing immutable artifact using JFrog CLI:'
+    Write-Log "  Repository: $ArtifactoryRepo"
+    Write-Log "  Path:       $RelativePath"
+    Write-Log "  Source:     $Source"
+    Write-Log "  Artifact:   $artifactSpec"
+
+    # --------------------------------------------------------
+    # Upload using the existing Jenkins JFrog configuration.
+    # --------------------------------------------------------
 
     & jf rt u `
-        $localFile `
+        $Source `
         $artifactSpec `
         --server-id=local-artifactory `
         --flat=true `
@@ -627,9 +643,18 @@ function Upload-ArtifactoryFile {
         throw "JFrog CLI upload failed with exit code $LASTEXITCODE"
     }
 
-    Write-Log "Artifactory publish completed successfully."
+    # --------------------------------------------------------
+    # Return the normal Artifactory URL for the manifest.
+    # --------------------------------------------------------
 
-    return $LASTEXITCODE
+    $url =
+        Get-ArtifactoryUrl `
+            -RelativePath $RelativePath
+
+    Write-Log 'Artifactory publish completed successfully.'
+    Write-Log "  URL: $url"
+
+    return $url
 }
 
 # ============================================================
