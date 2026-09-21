@@ -319,8 +319,7 @@ function Get-ArtifactoryArtifact {
             -Force `
             -Path $destinationDirectory | Out-Null
 
-        $artifactSpec = "$ArtifactoryRepo/$relativePath"
-
+        $artifactSpec = "$ArtifactoryRepo/$ArtifactPath"
         Write-Host "  Artifact: $artifactSpec"
 
         & jf rt dl `
