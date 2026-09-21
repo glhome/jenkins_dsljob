@@ -322,12 +322,12 @@ function Get-ArtifactoryArtifact {
         $artifactSpec = "$ArtifactoryRepo/$ArtifactPath"
         Write-Host "  Artifact: $artifactSpec"
 
-        & jf rt dl `
-            $artifactSpec `
-            "$destinationDirectory\" `
+        & jf rt download `
             --server-id=local-artifactory `
-            --threadiness=8 `
-            --flat=true
+            --flat=true `
+            --threads=8 `
+            $artifactSpec `
+            "$destinationDirectory\"
 
         if ($LASTEXITCODE -ne 0) {
             throw "JFrog CLI download failed with exit code $LASTEXITCODE"
