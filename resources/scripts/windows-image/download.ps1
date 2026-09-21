@@ -325,12 +325,32 @@ function Get-ArtifactoryArtifact {
         & jf rt download `
             --server-id=local-artifactory `
             --flat=true `
-            --threads=8 `
-            $artifactSpec `
+            "$artifactSpec" `
             "$destinationDirectory\"
 
         if ($LASTEXITCODE -ne 0) {
             throw "JFrog CLI download failed with exit code $LASTEXITCODE"
+        }
+
+        # JFrog CLI keeps the artifact's original filename.
+        # Rename it to the filename requested by the caller.
+        $downloadedFile = Join-Path `
+            $destinationDirectory `
+            ([System.IO.Path]::GetFileName($ArtifactPath))
+
+        if (-not (Test-Path -LiteralPath $downloadedFile)) {
+            throw "JFrog CLI completed successfully but downloaded file was not found: $downloadedFile"
+        }
+
+        if ($downloadedFile -ne $DestinationPath) {
+            Write-Host "  Renaming:"
+            Write-Host "    From: $downloadedFile"
+            Write-Host "    To:   $DestinationPath"
+
+            Move-Item `
+                -LiteralPath $downloadedFile `
+                -Destination $DestinationPath `
+                -Force
         }
 
         if (-not (Test-Path -LiteralPath $DestinationPath)) {
