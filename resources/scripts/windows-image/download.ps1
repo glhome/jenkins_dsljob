@@ -42,7 +42,7 @@ function Download-Artifact([string]$Path,[string]$Destination,[string]$ExpectedS
     $spec="$ArtifactoryRepo/$Path"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
     & jf rt download --server-id=local-artifactory --flat=true "$spec" "$(Split-Path -Parent $Destination)\"
-    if ($LASTEXITCODE -ne 0) { throw "JFrog download failed with exit code $LASTEXITCODE: $spec" }
+    if ($LASTEXITCODE -ne 0) { throw "JFrog download failed with exit code ${LASTEXITCODE}: $spec" }
     $source=Join-Path (Split-Path -Parent $Destination) ([IO.Path]::GetFileName($Path))
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Downloaded artifact not found: $source" }
     if ($source -ne $Destination) { Move-Item -LiteralPath $source -Destination $Destination -Force }
