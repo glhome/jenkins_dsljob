@@ -29,13 +29,6 @@ def call(Map cfg = [:]) {
         powershell(
             '''
 $ErrorActionPreference = 'Stop'
-
-Write-Host ""
-Write-Host "==========================================================="
-Write-Host " Download Windows Base ISO and Resolve Updates"
-Write-Host "==========================================================="
-Write-Host ""
-
 & '__DOWNLOAD_SCRIPT_PATH__' `
     -WorkRoot '__WORK_ROOT__' `
     -BaseIsoArtifact '__BASE_ISO_ARTIFACT__' `
@@ -47,10 +40,7 @@ Write-Host ""
     -ArtifactoryUser $env:ARTIFACTORY_USER `
     -ArtifactoryPassword $env:ARTIFACTORY_PASSWORD `
     -ResolverScriptPath '__RESOLVER_SCRIPT_PATH__'
-
-if ($LASTEXITCODE -ne 0) {
-    throw "download.ps1 failed with exit code $LASTEXITCODE"
-}
+if ($LASTEXITCODE -ne 0) { throw "download.ps1 failed with exit code $LASTEXITCODE" }
 '''
             .replace('__DOWNLOAD_SCRIPT_PATH__', downloadScriptPath)
             .replace('__WORK_ROOT__', workRoot)
@@ -64,59 +54,29 @@ if ($LASTEXITCODE -ne 0) {
         )
     }
 
+    def markerPath = "${workRoot}\\download\\patched-cache-hit.json"
     def resolvedPath = "${workRoot}\\download\\resolved-updates.json"
-    def resolvedJson = powershell(
-        returnStdout: true,
-        script: "(Get-Content -LiteralPath '${resolvedPath}' -Raw | ConvertFrom-Json | ConvertTo-Json -Compress)"
-    ).trim()
+    def json = powershell(returnStdout: true, script: "(Get-Content -LiteralPath '${resolvedPath}' -Raw | ConvertFrom-Json | ConvertTo-Json -Compress)").trim()
+    def resolved = new groovy.json.JsonSlurperClassic().parseText(json)
+    def markerExists = fileExists(markerPath)
+    def marker = markerExists ? new groovy.json.JsonSlurperClassic().parseText(readFile(markerPath)) : [:]
 
-    def resolved = new groovy.json.JsonSlurperClassic().parseText(resolvedJson)
     def lcuBuild = (resolved.build ?: '').toString()
     def kb = (resolved.kb ?: '').toString().toUpperCase()
     def releaseDate = (resolved.releaseDate ?: '').toString()
     def normalizedArchitecture = architecture.equalsIgnoreCase('amd64') ? 'x64' : architecture.toLowerCase()
-
-    if (!lcuBuild || !kb) {
-        error "resolved-updates.json is missing build or KB. build='${lcuBuild}', kb='${kb}'"
-    }
-
     def outputName = "Windows11-24H2-${normalizedArchitecture}-${lcuBuild}-${kb}"
-    def isoArtifactPath = "Windows11/24H2/${normalizedArchitecture}/${lcuBuild}/${outputName}.iso"
+    def patchedBase = "Windows11/24H2/${normalizedArchitecture}/patched/${lcuBuild}"
 
-    def isoExists = powershell(
-        returnStdout: true,
-        script: """
-\$ErrorActionPreference = 'Stop'
-\$env:JFROG_CLI_HOME_DIR = 'C:\\Jenkins\\jfrog'
-
-if (-not (Get-Command jf.exe -ErrorAction SilentlyContinue)) {
-    throw 'JFrog CLI was not found.'
-}
-
-\$result = & jf rt s '${artifactoryRepo}/${isoArtifactPath}' --server-id=local-artifactory --count=1 2>&1
-\$exitCode = \$LASTEXITCODE
-if (\$exitCode -ne 0) {
-    throw "JFrog search failed with exit code \$exitCode. \$result"
-}
-
-if (\$result -match '(?i)${outputName.replace('\\','\\\\')}\\.iso') {
-    'true'
-} else {
-    'false'
-}
-"""
-    ).trim().equalsIgnoreCase('true')
-
-    echo "Resolved latest LCU: ${kb} / ${lcuBuild}"
-    echo "ISO cache check: ${isoExists ? 'FOUND' : 'NOT FOUND'}"
-    echo "ISO artifact: ${isoArtifactPath}"
+    if (!lcuBuild || !kb) error "resolved-updates.json is missing build or KB. build='${lcuBuild}', kb='${kb}'"
 
     return [
         kb: kb,
         lcuBuild: lcuBuild,
         releaseDate: releaseDate,
         outputName: outputName,
-        isoArtifactPath: isoArtifactPath,
-        isoExists: isoExists
+        cacheHit: markerExists && marker.cacheHit == true,
+        manifestArtifactPath: marker.manifestArtifactPath ?: "${patchedBase}/manifest.json",
+        isoArtifactPath: marker.isoArtifactPath ?: "${patchedBase}/${outputName}.iso"
     ]
 }

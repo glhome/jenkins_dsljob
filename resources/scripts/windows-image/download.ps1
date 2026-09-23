@@ -1,682 +1,131 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$WorkRoot,
-
-    [Parameter(Mandatory = $true)]
-    [string]$BaseIsoArtifact,
-
-    [Parameter(Mandatory = $false)]
+    [Parameter(Mandatory=$true)][string]$WorkRoot,
+    [Parameter(Mandatory=$true)][string]$BaseIsoArtifact,
     [string]$BaseIsoSha256 = '',
-
-    [Parameter(Mandatory = $false)]
     [string]$WindowsBuild = '26100',
-
-    [Parameter(Mandatory = $false)]
-    [ValidateSet('x64', 'amd64', 'arm64')]
-    [string]$Architecture = 'x64',
-
-    [Parameter(Mandatory = $false)]
+    [ValidateSet('x64','amd64','arm64')][string]$Architecture = 'x64',
     [string]$ArtifactoryBaseUrl = '',
-
-    [Parameter(Mandatory = $false)]
     [string]$ArtifactoryRepo = 'snapshot-generic-local',
-
-    [Parameter(Mandatory = $true)]
-    [string]$ArtifactoryUser,
-
-    [Parameter(Mandatory = $true)]
-    [string]$ArtifactoryPassword,
-
-    [Parameter(Mandatory = $true)]
-    [string]$ResolverScriptPath
+    [Parameter(Mandatory=$true)][string]$ArtifactoryUser,
+    [Parameter(Mandatory=$true)][string]$ArtifactoryPassword,
+    [Parameter(Mandatory=$true)][string]$ResolverScriptPath
 )
-
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference='Stop'
+if ($Architecture -match '^(?i)(amd64|x64)$') {$Architecture='x64'}
+$WorkRoot=[IO.Path]::GetFullPath($WorkRoot)
+$DownloadDir=Join-Path $WorkRoot 'download'
+$UpdatesDir=Join-Path $DownloadDir 'updates'
+$BaseIsoPath=Join-Path $DownloadDir 'base.iso'
+$ResolvedPath=Join-Path $DownloadDir 'resolved-updates.json'
+$CacheMarker=Join-Path $DownloadDir 'patched-cache-hit.json'
+New-Item -ItemType Directory -Force -Path $DownloadDir,$UpdatesDir | Out-Null
+$ArtifactoryBaseUrl=$ArtifactoryBaseUrl.TrimEnd('/')
+$ArtifactoryUrlRoot=if ($ArtifactoryBaseUrl.EndsWith('/artifactory')) {$ArtifactoryBaseUrl} else {"$ArtifactoryBaseUrl/artifactory"}
+if ([string]::IsNullOrWhiteSpace($ArtifactoryBaseUrl)) {throw 'ArtifactoryBaseUrl is required.'}
+if ([string]::IsNullOrWhiteSpace($ArtifactoryRepo)) {throw 'ArtifactoryRepo is required.'}
 
-# ============================================================
-# Normalize architecture
-# ============================================================
-
-if ($Architecture -match '^(?i)(amd64|x64)$') {
-    $Architecture = 'x64'
-}
-elseif ($Architecture -match '^(?i)arm64$') {
-    $Architecture = 'arm64'
-}
-else {
-    throw "Unsupported architecture: $Architecture"
-}
-
-# ============================================================
-# Normalize paths
-# ============================================================
-
-$WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
-
-$DownloadDir = Join-Path $WorkRoot 'download'
-$UpdatesDir = Join-Path $DownloadDir 'updates'
-
-$BaseIsoPath = Join-Path $DownloadDir 'base.iso'
-$ResolvedManifestPath = Join-Path $DownloadDir 'resolved-updates.json'
-
-New-Item `
-    -ItemType Directory `
-    -Force `
-    -Path $DownloadDir, $UpdatesDir |
-    Out-Null
-
-# ============================================================
-# Normalize Artifactory URL
-#
-# Accept either:
-#
-#   http://server:8082
-#
-# or:
-#
-#   http://server:8082/artifactory
-#
-# Internally always use:
-#
-#   http://server:8082/artifactory
-# ============================================================
-
-$ArtifactoryBaseUrl = $ArtifactoryBaseUrl.TrimEnd('/')
-
-if ($ArtifactoryBaseUrl.EndsWith('/artifactory')) {
-    $ArtifactoryUrlRoot = $ArtifactoryBaseUrl
-}
-else {
-    $ArtifactoryUrlRoot = "$ArtifactoryBaseUrl/artifactory"
-}
-
-Write-Host ''
-Write-Host '============================================================'
-Write-Host ' Windows Image Download'
-Write-Host '============================================================'
-Write-Host "WorkRoot           : $WorkRoot"
-Write-Host "Base ISO Artifact  : $BaseIsoArtifact"
-Write-Host "Artifactory URL    : $ArtifactoryUrlRoot"
-Write-Host "Artifactory Repo   : $ArtifactoryRepo"
-Write-Host "Windows Build      : $WindowsBuild"
-Write-Host "Architecture       : $Architecture"
-Write-Host ''
-
-# ============================================================
-# Validate Artifactory credentials
-# ============================================================
-
-if ([string]::IsNullOrWhiteSpace($ArtifactoryBaseUrl)) {
-    throw 'ArtifactoryBaseUrl is required.'
-}
-
-if ([string]::IsNullOrWhiteSpace($ArtifactoryRepo)) {
-    throw 'ArtifactoryRepo is required.'
-}
-
-if ([string]::IsNullOrWhiteSpace($ArtifactoryUser)) {
-    throw 'Artifactory username is empty.'
-}
-
-if ([string]::IsNullOrWhiteSpace($ArtifactoryPassword)) {
-    throw 'Artifactory password is empty.'
-}
-
-# ============================================================
-# Authentication
-# ============================================================
-
-$credentialPair = '{0}:{1}' -f `
-    $ArtifactoryUser, `
-    $ArtifactoryPassword
-
-$credentialBytes =
-    [System.Text.Encoding]::ASCII.GetBytes($credentialPair)
-
-$encodedCredentials =
-    [System.Convert]::ToBase64String($credentialBytes)
-
-$headers = @{
-    Authorization = "Basic $encodedCredentials"
-}
-
-# ============================================================
-# Artifactory URL helper
-# ============================================================
-
-function Get-ArtifactoryUrl {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ArtifactPath
-    )
-
-    $cleanPath = $ArtifactPath.TrimStart('/')
-
-    return (
-        "$ArtifactoryUrlRoot/" +
-        "$ArtifactoryRepo/" +
-        $cleanPath
-    )
-}
-
-# ============================================================
-# SHA256
-# ============================================================
-
-function Get-FileSha256 {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "File does not exist: $Path"
-    }
-
-    return (
-        Get-FileHash `
-            -LiteralPath $Path `
-            -Algorithm SHA256
-    ).Hash.ToLowerInvariant()
-}
-
-# ============================================================
-# Artifactory connection test
-# ============================================================
-
-function Test-ArtifactoryConnection {
-
-    $pingUri =
-        "$ArtifactoryUrlRoot/api/system/ping"
-
-    Write-Host ''
-    Write-Host 'Testing Artifactory connection...'
-    Write-Host "  $pingUri"
-
-    try {
-
-        $response = Invoke-WebRequest `
-            -Uri $pingUri `
-            -Headers $headers `
-            -Method Get `
-            -UseBasicParsing `
-            -TimeoutSec 60
-
-        Write-Host "  HTTP Status: $($response.StatusCode)"
-
-        if ($response.StatusCode -ne 200) {
-            throw `
-                "Artifactory ping returned HTTP $($response.StatusCode)."
-        }
-
-        Write-Host '  Artifactory connection: PASS'
-    }
+$pair='{0}:{1}' -f $ArtifactoryUser,$ArtifactoryPassword
+$headers=@{Authorization='Basic '+[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))}
+function Get-ArtifactUrl([string]$Path) { return "$ArtifactoryUrlRoot/$ArtifactoryRepo/$($Path.TrimStart('/'))" }
+function Get-Sha256([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-ArtifactText([string]$Path) {
+    $uri=Get-ArtifactUrl $Path
+    try { return (Invoke-WebRequest -Uri $uri -Headers $headers -UseBasicParsing -TimeoutSec 60).Content }
     catch {
-
-        Write-Host ''
-        Write-Host 'Artifactory connection test failed.'
-        Write-Host "URL: $pingUri"
-
-        if ($_.Exception.Response) {
-            try {
-                Write-Host `
-                    "HTTP Status: $([int]$_.Exception.Response.StatusCode)"
-            }
-            catch {
-            }
-        }
-
+        if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { return $null }
         throw
     }
 }
-
-# ============================================================
-# Download Artifactory artifact
-# ============================================================
-
-function Get-ArtifactoryArtifact {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ArtifactPath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$DestinationPath,
-
-        [string]$ExpectedSha256 = ''
-    )
-
-    $uri = Get-ArtifactoryUrl -ArtifactPath $ArtifactPath
-
-    Write-Host ''
-    Write-Host 'Artifactory request'
-    Write-Host "  URI         : $uri"
-    Write-Host "  Destination : $DestinationPath"
-
-    # --------------------------------------------------------
-    # Reuse existing file when checksum matches
-    # --------------------------------------------------------
-
-    if (Test-Path -LiteralPath $DestinationPath -PathType Leaf) {
-
-        if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256)) {
-
-            Write-Host '  Existing file found. Checking SHA256...'
-
-            $existingHash =
-                Get-FileSha256 -Path $DestinationPath
-
-            if ($existingHash -eq $ExpectedSha256.ToLowerInvariant()) {
-
-                Write-Host '  Existing file SHA256 matches.'
-                Write-Host '  Download skipped.'
-
-                return
-            }
-
-            Write-Warning `
-                'Existing file SHA256 does not match expected value.'
-
-            Remove-Item `
-                -LiteralPath $DestinationPath `
-                -Force
-        }
-        else {
-
-            Write-Warning `
-                'Existing file found but no expected SHA256 was supplied.'
-
-            Remove-Item `
-                -LiteralPath $DestinationPath `
-                -Force
-        }
+function Download-Artifact([string]$Path,[string]$Destination,[string]$ExpectedSha256='') {
+    $spec="$ArtifactoryRepo/$Path"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
+    & jf rt download --server-id=local-artifactory --flat=true "$spec" "$(Split-Path -Parent $Destination)\"
+    if ($LASTEXITCODE -ne 0) { throw "JFrog download failed with exit code $LASTEXITCODE: $spec" }
+    $source=Join-Path (Split-Path -Parent $Destination) ([IO.Path]::GetFileName($Path))
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Downloaded artifact not found: $source" }
+    if ($source -ne $Destination) { Move-Item -LiteralPath $source -Destination $Destination -Force }
+    if ($ExpectedSha256) {
+        $actual=Get-Sha256 $Destination
+        if ($actual -ne $ExpectedSha256.ToLowerInvariant()) { throw "SHA256 mismatch for $Path. Expected $ExpectedSha256, actual $actual" }
     }
-
-    $parentDirectory =
-        Split-Path `
-            -Parent `
-            $DestinationPath
-
-    New-Item `
-        -ItemType Directory `
-        -Force `
-        -Path $parentDirectory |
-        Out-Null
-
-    try {
-
-        Write-Host '  Downloading from Artifactory using JFrog CLI...'
-        Write-Host "  URL: $uri"
-        Write-Host "  Destination: $DestinationPath"
-
-        $downloadStart = Get-Date
-
-        $destinationDirectory = Split-Path -Parent $DestinationPath
-
-        New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $destinationDirectory | Out-Null
-
-        $artifactSpec = "$ArtifactoryRepo/$ArtifactPath"
-        Write-Host "  Artifact: $artifactSpec"
-
-        & jf rt download `
-            --server-id=local-artifactory `
-            --flat=true `
-            "$artifactSpec" `
-            "$destinationDirectory\"
-
-        if ($LASTEXITCODE -ne 0) {
-            throw "JFrog CLI download failed with exit code $LASTEXITCODE"
-        }
-
-        # JFrog CLI keeps the artifact's original filename.
-        # Rename it to the filename requested by the caller.
-        $downloadedFile = Join-Path `
-            $destinationDirectory `
-            ([System.IO.Path]::GetFileName($ArtifactPath))
-
-        if (-not (Test-Path -LiteralPath $downloadedFile)) {
-            throw "JFrog CLI completed successfully but downloaded file was not found: $downloadedFile"
-        }
-
-        if ($downloadedFile -ne $DestinationPath) {
-            Write-Host "  Renaming:"
-            Write-Host "    From: $downloadedFile"
-            Write-Host "    To:   $DestinationPath"
-
-            Move-Item `
-                -LiteralPath $downloadedFile `
-                -Destination $DestinationPath `
-                -Force
-        }
-
-        if (-not (Test-Path -LiteralPath $DestinationPath)) {
-            throw "JFrog CLI completed successfully but file was not found: $DestinationPath"
-        }
-
-        $downloadedFile = Get-Item -LiteralPath $DestinationPath
-
-        if ($downloadedFile.Length -eq 0) {
-            throw "Downloaded file is 0 bytes: $DestinationPath"
-        }
-
-        $downloadElapsed = (Get-Date) - $downloadStart
-
-        Write-Host "  Download completed."
-        Write-Host "  Size: $($downloadedFile.Length) bytes"
-        Write-Host "  Download time: $($downloadElapsed.ToString())"
-    }
-    catch {
-
-        Write-Host ''
-        Write-Host 'Artifactory request failed.'
-        Write-Host "URL: $uri"
-
-        if (Test-Path -LiteralPath $DestinationPath) {
-            try {
-                $partialFile = Get-Item -LiteralPath $DestinationPath
-                Write-Host "Partial file size: $($partialFile.Length) bytes"
-            }
-            catch {
-            }
-        }
-
-        throw
-    }
-
-    if (-not (Test-Path -LiteralPath $DestinationPath -PathType Leaf)) {
-        throw `
-            "Artifactory download completed but file was not created: $DestinationPath"
-    }
-
-    $fileInfo =
-        Get-Item -LiteralPath $DestinationPath
-
-    Write-Host "  Downloaded size: $($fileInfo.Length) bytes"
-
-    if ($fileInfo.Length -le 0) {
-        throw "Downloaded file is empty: $DestinationPath"
-    }
-
-    $actualSha256 =
-        Get-FileSha256 -Path $DestinationPath
-
-    Write-Host "  SHA256: $actualSha256"
-
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256)) {
-
-        if ($actualSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
-
-            throw @"
-SHA256 mismatch for Artifactory artifact.
-
-Artifact : $ArtifactPath
-Expected : $ExpectedSha256
-Actual   : $actualSha256
-File     : $DestinationPath
-"@
-        }
-
-        Write-Host '  SHA256 verification: PASS'
-    }
-
-    Write-Host '  Download: PASS'
 }
 
-# ============================================================
-# Test Artifactory
-# ============================================================
-
-Test-ArtifactoryConnection
-
-# ============================================================
-# Download base ISO
-#
-# Expected artifact example:
-#
-# Windows11/24H2/x64/base/
-# en-us_windows_11_iot_enterprise_version_24h2_x64_dvd_3a99b72b.iso
-# ============================================================
-
-Write-Host ''
 Write-Host '============================================================'
-Write-Host ' Download Base ISO'
+Write-Host ' Resolve LCU and Check Patched Image Cache'
 Write-Host '============================================================'
+Write-Host "Windows Build: $WindowsBuild"
+Write-Host "Architecture : $Architecture"
 
-Get-ArtifactoryArtifact `
-    -ArtifactPath $BaseIsoArtifact `
-    -DestinationPath $BaseIsoPath `
-    -ExpectedSha256 $BaseIsoSha256
+if (Test-Path -LiteralPath $CacheMarker) { Remove-Item -LiteralPath $CacheMarker -Force }
+if (-not (Test-Path -LiteralPath $ResolverScriptPath -PathType Leaf)) { throw "Resolver script does not exist: $ResolverScriptPath" }
 
-if (-not (Test-Path -LiteralPath $BaseIsoPath -PathType Leaf)) {
-    throw "Base ISO was not downloaded: $BaseIsoPath"
-}
+# Resolve the LCU first. The resolver also populates download\updates from the immutable LCU cache.
+& $ResolverScriptPath -WorkRoot $WorkRoot -WindowsBuild $WindowsBuild -Architecture $Architecture -ArtifactoryBaseUrl $ArtifactoryBaseUrl -ArtifactoryRepo $ArtifactoryRepo -ArtifactoryUser $ArtifactoryUser -ArtifactoryPassword $ArtifactoryPassword
+if ($LASTEXITCODE -ne 0) { throw "Update resolver failed with exit code $LASTEXITCODE" }
+if (-not (Test-Path -LiteralPath $ResolvedPath -PathType Leaf)) { throw "Resolved update manifest was not created: $ResolvedPath" }
+$resolved=Get-Content -LiteralPath $ResolvedPath -Raw | ConvertFrom-Json
+if (-not $resolved.kb -or -not $resolved.build -or -not $resolved.sha256) { throw 'Resolved update manifest is missing KB, build, or SHA256.' }
 
-$baseIsoInfo =
-    Get-Item -LiteralPath $BaseIsoPath
+$kb=$resolved.kb.ToString().ToUpperInvariant()
+$lcuBuild=$resolved.build.ToString()
+$normalizedArch=if ($Architecture -eq 'amd64') {'x64'} else {$Architecture.ToLowerInvariant()}
+$patchedBase="Windows11/24H2/$normalizedArch/patched/$lcuBuild"
+$manifestArtifact="$patchedBase/manifest.json"
+$isoName="Windows11-24H2-$normalizedArch-$lcuBuild-$kb.iso"
+$isoArtifact="$patchedBase/$isoName"
 
-Write-Host ''
-Write-Host 'Base ISO:'
-Write-Host "  Path : $BaseIsoPath"
-Write-Host "  Size : $($baseIsoInfo.Length) bytes"
+Write-Host "Resolved LCU: $kb / $lcuBuild"
+Write-Host "Patched manifest: $(Get-ArtifactUrl $manifestArtifact)"
 
+# A cache hit is valid only when the manifest represents the exact requested inputs.
 if ([string]::IsNullOrWhiteSpace($BaseIsoSha256)) {
-
-    Write-Warning `
-        'BASE_ISO_SHA256 is empty. Base ISO integrity was not verified against an expected hash.'
+    Write-Warning 'BASE_ISO_SHA256 is empty; exact patched-image cache validation is disabled.'
+} else {
+    $remoteManifest=Get-ArtifactText $manifestArtifact
+    if ($remoteManifest) {
+        try {
+            $m=$remoteManifest | ConvertFrom-Json
+            $remoteBase=([string]$m.source.baseIsoSha256).ToLowerInvariant()
+            $remoteLcu=$m.updates.lcu
+            $remoteKb=([string]$remoteLcu.kb).ToUpperInvariant()
+            $remoteBuild=[string]$remoteLcu.build
+            $remoteSha=([string]$remoteLcu.sha256).ToLowerInvariant()
+            $remoteUpdateId=[string]$remoteLcu.updateId
+            $wantedSha=$BaseIsoSha256.ToLowerInvariant()
+            $wantedUpdateId=[string]$resolved.updateId
+            $same = ($remoteBase -eq $wantedSha) -and ($remoteKb -eq $kb) -and ($remoteBuild -eq $lcuBuild) -and ($remoteSha -eq $resolved.sha256.ToLowerInvariant())
+            if ($wantedUpdateId -and $remoteUpdateId) { $same = $same -and ($remoteUpdateId -eq $wantedUpdateId) }
+            if ($same) {
+                [ordered]@{cacheHit=$true;manifestArtifactPath=$manifestArtifact;isoArtifactPath=$isoArtifact;kb=$kb;build=$lcuBuild} | ConvertTo-Json | Set-Content -LiteralPath $CacheMarker -Encoding UTF8
+                Write-Host 'PATCHED IMAGE CACHE HIT'
+                Write-Host 'Base ISO download skipped.'
+                Write-Host 'MSU download skipped.'
+                exit 0
+            }
+            Write-Host 'Patched image manifest exists, but inputs do not match. Cache miss.'
+        } catch { Write-Warning "Could not parse remote patched manifest: $($_.Exception.Message)" }
+    } else { Write-Host 'Patched image manifest not found. Cache miss.' }
 }
-else {
 
-    $actualBaseIsoSha256 =
-        Get-FileSha256 -Path $BaseIsoPath
-
-    Write-Host "  SHA256: $actualBaseIsoSha256"
-
-    if (
-        $actualBaseIsoSha256 -ne
-        $BaseIsoSha256.ToLowerInvariant()
-    ) {
-
-        throw @"
-Base ISO SHA256 mismatch.
-
-Expected: $BaseIsoSha256
-Actual  : $actualBaseIsoSha256
-File    : $BaseIsoPath
-"@
-    }
-
-    Write-Host '  SHA256 verification: PASS'
-}
-
-# ============================================================
-# Resolve Windows update
-#
-# IMPORTANT:
-# The resolver creates:
-#
-#   download\resolved-updates.json
-#
-# There is intentionally NO UpdateManifestUrl or
-# UpdateManifestFile parameter here.
-# ============================================================
-
-Write-Host ''
+# Cache miss: now download the base ISO. The resolver already cached/downloaded the MSU.
 Write-Host '============================================================'
-Write-Host ' Resolve Windows Update'
+Write-Host ' Download Base ISO (cache miss)'
 Write-Host '============================================================'
-
-if (-not (Test-Path -LiteralPath $ResolverScriptPath -PathType Leaf)) {
-    throw "Resolver script does not exist: $ResolverScriptPath"
+Download-Artifact -Path $BaseIsoArtifact -Destination $BaseIsoPath -ExpectedSha256 $BaseIsoSha256
+if (-not (Test-Path -LiteralPath $BaseIsoPath -PathType Leaf)) { throw "Base ISO was not downloaded: $BaseIsoPath" }
+if ($BaseIsoSha256) {
+    $actualBase=Get-Sha256 $BaseIsoPath
+    if ($actualBase -ne $BaseIsoSha256.ToLowerInvariant()) { throw "Base ISO SHA256 mismatch. Expected $BaseIsoSha256, actual $actualBase" }
 }
 
-Write-Host "Resolver script: $ResolverScriptPath"
-
-& $ResolverScriptPath `
-    -WorkRoot $WorkRoot `
-    -WindowsBuild $WindowsBuild `
-    -Architecture $Architecture `
-    -ArtifactoryBaseUrl $ArtifactoryBaseUrl `
-    -ArtifactoryRepo $ArtifactoryRepo `
-    -ArtifactoryUser $ArtifactoryUser `
-    -ArtifactoryPassword $ArtifactoryPassword
-
-if ($LASTEXITCODE -ne 0) {
-    throw `
-        "Windows update resolver failed with exit code $LASTEXITCODE."
-}
-
-# ============================================================
-# Validate resolved manifest
-# ============================================================
-
-if (-not (
-    Test-Path `
-        -LiteralPath $ResolvedManifestPath `
-        -PathType Leaf
-)) {
-    throw `
-        "Resolved update manifest was not created: $ResolvedManifestPath"
-}
-
-$manifestJson =
-    Get-Content `
-        -LiteralPath $ResolvedManifestPath `
-        -Raw
-
-if ([string]::IsNullOrWhiteSpace($manifestJson)) {
-    throw `
-        "Resolved update manifest is empty: $ResolvedManifestPath"
-}
-
-$manifest =
-    $manifestJson | ConvertFrom-Json
-
-# The resolver currently creates one update object:
-#
-# {
-#     schemaVersion: "1.0",
-#     type: "LCU",
-#     kb: "...",
-#     ...
-# }
-#
-# Support an updates[] wrapper as well.
-
-if ($manifest.PSObject.Properties.Name -contains 'updates') {
-    $updates = @($manifest.updates)
-}
-elseif ($manifest.PSObject.Properties.Name -contains 'kb') {
-    $updates = @($manifest)
-}
-else {
-    throw `
-        'Resolved update manifest does not contain an "updates" array or "kb" property.'
-}
-
-if ($updates.Count -eq 0) {
-    throw 'Resolved update manifest contains no updates.'
-}
-
-Write-Host ''
-Write-Host "Resolved update count: $($updates.Count)"
-
-# ============================================================
-# Validate every resolved package
-# ============================================================
-
+$updates=@($resolved)
 foreach ($update in $updates) {
-
-    if ([string]::IsNullOrWhiteSpace($update.kb)) {
-        throw 'Resolved update is missing KB number.'
-    }
-
-    if ([string]::IsNullOrWhiteSpace($update.fileName)) {
-        throw `
-            "Resolved update $($update.kb) is missing fileName."
-    }
-
-    if ([string]::IsNullOrWhiteSpace($update.sha256)) {
-        throw `
-            "Resolved update $($update.kb) is missing sha256."
-    }
-
-    $packagePath =
-        Join-Path `
-            $UpdatesDir `
-            $update.fileName
-
-    Write-Host ''
-    Write-Host 'Resolved update:'
-    Write-Host "  KB       : $($update.kb)"
-    Write-Host "  Build    : $($update.build)"
-    Write-Host "  File     : $($update.fileName)"
-    Write-Host "  SHA256   : $($update.sha256)"
-    Write-Host "  Path     : $packagePath"
-
-    if (-not (
-        Test-Path `
-            -LiteralPath $packagePath `
-            -PathType Leaf
-    )) {
-
-        throw @"
-Resolved update package is missing.
-
-KB   : $($update.kb)
-File : $packagePath
-"@
-    }
-
-    $actualHash =
-        Get-FileSha256 -Path $packagePath
-
-    if (
-        $actualHash -ne
-        $update.sha256.ToLowerInvariant()
-    ) {
-
-        throw @"
-Resolved update SHA256 mismatch.
-
-KB       : $($update.kb)
-File     : $packagePath
-Expected : $($update.sha256)
-Actual   : $actualHash
-"@
-    }
-
-   $updateFileName = [System.IO.Path]::GetFileName($update.fileName)
-    $expectedKb = $update.kb.ToString()
-
-    if ($updateFileName -notmatch "(?i)$([regex]::Escape($expectedKb))") {
-        throw "Resolved update filename '$updateFileName' does not contain expected KB '$expectedKb'."
-    }
-    Write-Host '  SHA256 verification: PASS'
+    $package=Join-Path $UpdatesDir $update.fileName
+    if (-not (Test-Path -LiteralPath $package -PathType Leaf)) { throw "Resolved update package is missing: $package" }
+    $actual=Get-Sha256 $package
+    if ($actual -ne $update.sha256.ToLowerInvariant()) { throw "MSU SHA256 mismatch for $($update.fileName). Expected $($update.sha256), actual $actual" }
 }
-
-# ============================================================
-# Final summary
-# ============================================================
-
-Write-Host ''
-Write-Host '============================================================'
-Write-Host ' Download Stage Complete'
-Write-Host '============================================================'
-Write-Host "Base ISO : $BaseIsoPath"
-Write-Host "Manifest : $ResolvedManifestPath"
-Write-Host "Updates  : $UpdatesDir"
-Write-Host ''
-
-foreach ($update in $updates) {
-    Write-Host `
-        "  $($update.kb) | $($update.build) | $($update.fileName)"
-}
-
-Write-Host ''
 Write-Host 'Download stage: SUCCESS'
-
 exit 0

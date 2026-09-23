@@ -1,5 +1,4 @@
 def call(Map cfg = [:]) {
-
     def baseIsoArtifact = cfg.baseIsoArtifact
     def baseIsoSha256 = cfg.baseIsoSha256 ?: ''
     def windowsBuild = cfg.windowsBuild ?: '26100'
@@ -43,7 +42,7 @@ Image Index:
                 windowsImagePrepare(workRoot: workRoot)
             }
 
-            stage('Download Base ISO and Updates') {
+            stage('Resolve / Download') {
                 imageInfo = windowsImageDownload(
                     workRoot: workRoot,
                     baseIsoArtifact: baseIsoArtifact,
@@ -55,51 +54,27 @@ Image Index:
                 )
             }
 
-            echo """
-============================================================
- Resolved Windows Image
-============================================================
-LCU KB:
-  ${imageInfo.kb}
-LCU Build:
-  ${imageInfo.lcuBuild}
-Release Date:
-  ${imageInfo.releaseDate}
-ISO:
-  ${imageInfo.outputName}.iso
-Artifactory ISO:
-  ${imageInfo.isoArtifactPath}
-ISO Already Exists:
-  ${imageInfo.isoExists}
-============================================================
-"""
+            echo "Resolved LCU: ${imageInfo.kb} / ${imageInfo.lcuBuild}"
 
-            if (imageInfo.isoExists) {
-                stage('Image Already Exists') {
-                    echo 'Latest LCU ISO already exists in Artifactory.'
-                    echo 'Skipping Extract, Service, Create ISO, and Publish.'
-                    echo "ISO: ${imageInfo.isoArtifactPath}"
+            if (imageInfo.cacheHit) {
+                stage('Patched Image Cache Hit') {
+                    echo 'Matching patched image already exists in Artifactory.'
+                    echo 'Base ISO and MSU downloads were skipped.'
+                    echo "Manifest: ${imageInfo.manifestArtifactPath}"
+                    echo "ISO:      ${imageInfo.isoArtifactPath}"
+                    echo 'Skipping Extract, Service, Create ISO, Generate Manifest, and Publish.'
                 }
             } else {
                 stage('Extract Windows Image') {
-                    windowsImageExtract(
-                        workRoot: workRoot,
-                        imageIndex: imageIndex
-                    )
+                    windowsImageExtract(workRoot: workRoot, imageIndex: imageIndex)
                 }
 
                 stage('Service Windows Image') {
-                    windowsImageService(
-                        workRoot: workRoot,
-                        imageIndex: imageIndex
-                    )
+                    windowsImageService(workRoot: workRoot, imageIndex: imageIndex)
                 }
 
                 stage('Create ISO') {
-                    windowsImageCreateIso(
-                        workRoot: workRoot,
-                        outputName: imageInfo.outputName
-                    )
+                    windowsImageCreateIso(workRoot: workRoot, outputName: imageInfo.outputName)
                 }
 
                 stage('Generate Manifest') {
