@@ -45,6 +45,12 @@ Write-Host "  ISO      : \$isoArtifact"
 Write-Host "  SHA256   : \$shaArtifact"
 Write-Host "  Manifest : \$manifestArtifact"
 
+# Versioned artifacts are immutable. Fail instead of overwriting an existing build.
+foreach (\$artifact in @("\$isoArtifact", "\$shaArtifact", "\$manifestArtifact")) {
+    & jf rt s --server-id=local-artifactory --count=1 "\$artifact" 2>&1 | Out-Null
+    if (\$LASTEXITCODE -eq 0) { throw "Immutable artifact already exists: \$artifact" }
+}
+
 & jf rt upload --server-id=local-artifactory --flat=true --detailed-summary "\$iso" "\$isoArtifact" 2>&1
 if (\$LASTEXITCODE -ne 0) { throw "ISO upload failed with exit code \$LASTEXITCODE" }
 & jf rt upload --server-id=local-artifactory --flat=true --detailed-summary "\$sha" "\$shaArtifact" 2>&1

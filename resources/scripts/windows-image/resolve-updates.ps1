@@ -8,7 +8,8 @@ param(
  [string]$ArtifactoryUser='',
  [string]$ArtifactoryPassword='',
  [string]$ArtifactoryToken='',
- [switch]$ForceMicrosoftDownload
+ [switch]$ForceMicrosoftDownload,
+ [switch]$ResolveOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -29,13 +30,18 @@ function TestMsuName([string]$name,[string]$kb){$n=$kb -replace '^KB','';$name -
 
 Write-Host "Resolving latest Windows 11 24H2 $Architecture LCU..."
 $c=Candidates (Catalog "Windows 11 24H2 cumulative update $Architecture");if(!$c){throw 'No matching Windows 11 24H2 cumulative update found.'}
-$selected=$c|Group-Object KB|ForEach-Object{$_.Group|Sort-Object Date -Descending|Select-Object -First 1}|Sort-Object Date -Descending,@{e={try{[version]$_.Build}catch{[version]'0.0'}};Descending=$true}|Select-Object -First 1
+$selected=$c | Group-Object KB | ForEach-Object { $_.Group | Sort-Object -Property Date -Descending | Select-Object -First 1 } | Sort-Object -Property @{Expression={ try { [version]$_.Build } catch { [version]'0.0' } }; Descending=$true}, Date -Descending | Select-Object -First 1
 $ids=@($selected.UpdateIds);if(!$ids){$ids=@([regex]::Matches((Catalog $selected.KB),'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')|ForEach-Object Value|Select-Object -Unique)};if(!$ids){throw "Unable to resolve UpdateID for $($selected.KB)."}
 $chosen=$null;foreach($id in $ids){foreach($url in @(DownloadUrls $id)){try{$fn=[IO.Path]::GetFileName(([uri]$url).AbsolutePath);if(TestMsuName $fn $selected.KB){$chosen=[pscustomobject]@{UpdateId=$id;Url=$url;FileName=$fn};break}}catch{} };if($chosen){break}}
 if(!$chosen){throw "Unable to resolve a valid MSU for $($selected.KB)."}
 $relative="Windows11/24H2/$Architecture/LCU/$($selected.KB)/$($chosen.FileName)";$local=Join-Path $updateDir $chosen.FileName
 $artifact=Find $relative
 if($artifact -and !$ForceMicrosoftDownload){Download $artifact $local;$source='Artifactory'}else{Download $chosen.Url $local;$source='Microsoft';if(!(Test-Path $local)){throw 'Microsoft download failed.'};$target=AUrl $relative;if(-not (Find $relative)){& jf rt upload --server-id=local-artifactory --flat=true --detailed-summary $local "$ArtifactoryRepo/$relative";if($LASTEXITCODE -ne 0){throw "JFrog upload failed with exit code $LASTEXITCODE"}};$artifact=AUrl $relative}
+if ($ResolveOnly) {
+    [ordered]@{schemaVersion='1.0';type='LCU';kb=$selected.KB;build=$selected.Build;windowsVersion='Windows 11 24H2';windowsBuild=$WindowsBuild;architecture=$Architecture;updateId=$chosen.UpdateId;releaseDate=$selected.Date.ToString('yyyy-MM-dd');fileName=$chosen.FileName;sha256='';microsoftUrl=$chosen.Url;artifactoryUrl=$artifact;artifactoryRepo=$ArtifactoryRepo;artifactoryPath=$relative;source='ResolveOnly';ssuIncluded=$true;resolvedAtUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $manifest -Encoding UTF8
+    Write-Host "Resolved $($selected.KB) / $($selected.Build) (resolve-only; MSU download skipped)"
+    exit 0
+}
 $sha=Sha $local
 [ordered]@{schemaVersion='1.0';type='LCU';kb=$selected.KB;build=$selected.Build;windowsVersion='Windows 11 24H2';windowsBuild=$WindowsBuild;architecture=$Architecture;updateId=$chosen.UpdateId;releaseDate=$selected.Date.ToString('yyyy-MM-dd');fileName=$chosen.FileName;sha256=$sha;microsoftUrl=$chosen.Url;artifactoryUrl=$artifact;artifactoryRepo=$ArtifactoryRepo;artifactoryPath=$relative;source=$source;ssuIncluded=$true;resolvedAtUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $manifest -Encoding UTF8
 Write-Host "Resolved $($selected.KB) / $($selected.Build) / $sha"
