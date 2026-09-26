@@ -46,9 +46,28 @@ Write-Host "  SHA256   : \$shaArtifact"
 Write-Host "  Manifest : \$manifestArtifact"
 
 # Versioned artifacts are immutable. Fail instead of overwriting an existing build.
-foreach (\$artifact in @("\$isoArtifact", "\$shaArtifact", "\$manifestArtifact")) {
-    & jf rt s --server-id=local-artifactory --count=1 "\$artifact" 2>&1 | Out-Null
-    if (\$LASTEXITCODE -eq 0) { throw "Immutable artifact already exists: \$artifact" }
+foreach ($artifact in @($isoArtifact, $shaArtifact, $manifestArtifact)) {
+
+    $searchOutputFile = Join-Path $env:TEMP "jfrog-search-$([guid]::NewGuid().ToString('N')).log"
+
+    & jf rt s `
+        --server-id=local-artifactory `
+        --count=1 `
+        "$artifact" `
+        *> $searchOutputFile
+
+    $searchExitCode = $LASTEXITCODE
+    $searchOutput = Get-Content -LiteralPath $searchOutputFile -Raw -ErrorAction SilentlyContinue
+
+    Remove-Item -LiteralPath $searchOutputFile -Force -ErrorAction SilentlyContinue
+
+    if ($searchExitCode -eq 0) {
+        throw "Immutable artifact already exists: $artifact"
+    }
+
+    # JFrog returns non-zero when no matching artifact exists.
+    # That is expected here.
+    Write-Host "Artifact does not exist and can be published: $artifact"
 }
 
 & jf rt upload --server-id=local-artifactory --flat=true --detailed-summary "\$iso" "\$isoArtifact" 2>&1
