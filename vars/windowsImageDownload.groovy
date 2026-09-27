@@ -94,7 +94,7 @@ if ($LASTEXITCODE -ne 0) {
     def resolvedJson = powershell(
         returnStdout: true,
         script: """
-\\$ErrorActionPreference = 'Stop'
+\$ErrorActionPreference = 'Stop'
 
 Get-Content -LiteralPath '${resolvedPath}' -Raw |
     ConvertFrom-Json |
