@@ -91,46 +91,43 @@ if ($LASTEXITCODE -ne 0) {
         error "Resolved update file not found: ${resolvedPath}"
     }
 
-    def resolvedJson = powershell(
+    /*
+    * Let PowerShell parse resolved-updates.json.
+    * Return only simple text values to Groovy.
+    */
+    def resolvedText = powershell(
         returnStdout: true,
         script: '''
     $ErrorActionPreference = 'Stop'
 
-    Get-Content -LiteralPath '__RESOLVED_PATH__' -Raw |
-        ConvertFrom-Json |
-        ConvertTo-Json -Compress -Depth 20
+    $j = Get-Content -LiteralPath '__RESOLVED_PATH__' -Raw |
+        ConvertFrom-Json
+
+    Write-Output ("BUILD=" + [string]$j.build)
+    Write-Output ("KB=" + [string]$j.kb)
+    Write-Output ("RELEASEDATE=" + [string]$j.releaseDate)
     '''
         .replace('__RESOLVED_PATH__', resolvedPath)
     ).trim()
 
-    /*
-     * Jenkins readJSON creates ordinary serializable Maps.
-     */
-    def resolved = parseJson(resolvedJson)
+    def lcuBuild = ''
+    def kb = ''
+    def releaseDate = ''
 
-    def marker = [:]
+    resolvedText.readLines().each { line ->
 
-    if (fileExists(markerPath)) {
-        def markerJson = readFile(
-            file: markerPath
-        ).trim()
+        if (line.startsWith('BUILD=')) {
+            lcuBuild = line.substring(6).trim()
+        }
 
-        if (markerJson) {
-            marker = readJSON(
-                text: markerJson,
-                returnPojo: true
-            )
+        if (line.startsWith('KB=')) {
+            kb = line.substring(3).trim().toUpperCase()
+        }
+
+        if (line.startsWith('RELEASEDATE=')) {
+            releaseDate = line.substring(12).trim()
         }
     }
-
-    def lcuBuild = (resolved.build ?: '').toString()
-    def kb = (resolved.kb ?: '').toString().toUpperCase()
-    def releaseDate = (resolved.releaseDate ?: '').toString()
-
-    def normalizedArchitecture =
-        architecture.equalsIgnoreCase('amd64')
-            ? 'x64'
-            : architecture.toLowerCase()
 
     if (!lcuBuild || !kb) {
         error(
@@ -139,25 +136,64 @@ if ($LASTEXITCODE -ne 0) {
         )
     }
 
+    /*
+    * Read the cache marker.
+    */
+    def cacheHit = false
+    def manifestArtifactPath = ''
+    def isoArtifactPath = ''
+
+    if (fileExists(markerPath)) {
+
+        def markerText = powershell(
+            returnStdout: true,
+            script: '''
+    $ErrorActionPreference = 'Stop'
+
+    $j = Get-Content -LiteralPath '__MARKER_PATH__' -Raw |
+        ConvertFrom-Json
+
+    Write-Output ("CACHEHIT=" + [string]$j.cacheHit)
+    Write-Output ("MANIFEST=" + [string]$j.manifestArtifactPath)
+    Write-Output ("ISO=" + [string]$j.isoArtifactPath)
+    '''
+            .replace('__MARKER_PATH__', markerPath)
+        ).trim()
+
+        markerText.readLines().each { line ->
+
+            if (line.startsWith('CACHEHIT=')) {
+                cacheHit =
+                    line.substring(9).trim().equalsIgnoreCase('true')
+            }
+
+            if (line.startsWith('MANIFEST=')) {
+                manifestArtifactPath =
+                    line.substring(9).trim()
+            }
+
+            if (line.startsWith('ISO=')) {
+                isoArtifactPath =
+                    line.substring(4).trim()
+            }
+        }
+    }
+
+    def normalizedArchitecture =
+        architecture.equalsIgnoreCase('amd64')
+            ? 'x64'
+            : architecture.toLowerCase()
+
     def outputName =
         "Windows11-24H2-${normalizedArchitecture}-${lcuBuild}-${kb}"
 
     def patchedBase =
         "Windows11/24H2/${normalizedArchitecture}/patched/${lcuBuild}"
 
-    def cacheHit =
-        marker.cacheHit == true
-
-    def manifestArtifactPath =
-        marker.manifestArtifactPath?.toString()
-
     if (!manifestArtifactPath) {
         manifestArtifactPath =
             "${patchedBase}/manifest.json"
     }
-
-    def isoArtifactPath =
-        marker.isoArtifactPath?.toString()
 
     if (!isoArtifactPath) {
         isoArtifactPath =
