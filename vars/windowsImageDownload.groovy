@@ -193,10 +193,4 @@ if ($LASTEXITCODE -ne 0) {
         manifestArtifactPath: manifestArtifactPath,
         isoArtifactPath: isoArtifactPath
     ]
-
-    @NonCPS
-    private Map parseJson(String json) {
-        return new groovy.json.JsonSlurperClassic()
-            .parseText(json) as Map
-    }
 }
