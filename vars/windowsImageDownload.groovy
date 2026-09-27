@@ -106,10 +106,7 @@ if ($LASTEXITCODE -ne 0) {
     /*
      * Jenkins readJSON creates ordinary serializable Maps.
      */
-    def resolved = readJSON(
-        text: resolvedJson,
-        returnPojo: true
-    )
+    def resolved = parseJson(resolvedJson)
 
     def marker = [:]
 
@@ -196,4 +193,10 @@ if ($LASTEXITCODE -ne 0) {
         manifestArtifactPath: manifestArtifactPath,
         isoArtifactPath: isoArtifactPath
     ]
+
+    @NonCPS
+    private Map parseJson(String json) {
+        return new groovy.json.JsonSlurperClassic()
+            .parseText(json) as Map
+    }
 }
