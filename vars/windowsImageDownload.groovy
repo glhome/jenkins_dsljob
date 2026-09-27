@@ -93,13 +93,14 @@ if ($LASTEXITCODE -ne 0) {
 
     def resolvedJson = powershell(
         returnStdout: true,
-        script: """
-\$ErrorActionPreference = 'Stop'
+        script: '''
+    $ErrorActionPreference = 'Stop'
 
-Get-Content -LiteralPath '${resolvedPath}' -Raw |
-    ConvertFrom-Json |
-    ConvertTo-Json -Compress -Depth 20
-"""
+    Get-Content -LiteralPath '__RESOLVED_PATH__' -Raw |
+        ConvertFrom-Json |
+        ConvertTo-Json -Compress -Depth 20
+    '''
+        .replace('__RESOLVED_PATH__', resolvedPath)
     ).trim()
 
     /*
