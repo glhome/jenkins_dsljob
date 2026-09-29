@@ -45,7 +45,7 @@ $ErrorActionPreference = 'Stop'
     -ArtifactoryUser $env:ARTIFACTORY_USER `
     -ArtifactoryPassword $env:ARTIFACTORY_PASSWORD `
     -ResolverScriptPath '__RESOLVER_SCRIPT_PATH__' `
-   
+    -ProfileScriptPath '__PROFILE_SCRIPT_PATH__'
 
 if ($LASTEXITCODE -ne 0) {
     throw "download.ps1 failed with exit code ${LASTEXITCODE}"
@@ -60,6 +60,7 @@ if ($LASTEXITCODE -ne 0) {
             .replace('__ARTIFACTORY_BASE_URL__', artifactoryBaseUrl)
             .replace('__ARTIFACTORY_REPO__', artifactoryRepo)
             .replace('__RESOLVER_SCRIPT_PATH__', resolverScriptPath)
+            .replace('__PROFILE_SCRIPT_PATH__', profileScriptPath)
         )
     }
 
