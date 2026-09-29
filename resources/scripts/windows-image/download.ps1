@@ -5,6 +5,7 @@ param(
     [string]$BaseIsoSha256 = '',
     [string]$Profile = 'windows11-24h2',
     [ValidateSet('x64','amd64','arm64')][string]$Architecture = 'x64',
+    [Parameter(Mandatory = $true)][string]$ProfileScriptPath,
     [string]$ArtifactoryBaseUrl = '',
     [string]$ArtifactoryRepo = 'snapshot-generic-local',
     [Parameter(Mandatory=$true)][string]$ArtifactoryUser,
@@ -14,6 +15,14 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if (-not (Test-Path -LiteralPath $ProfileScriptPath)) {
+    throw "Profile script not found: $ProfileScriptPath"
+}
+
+. $ProfileScriptPath
+
+$profileInfo = Get-WindowsImageProfile -Name $Profile
 
 if ($Architecture -match '(?i)^(amd64|x64)$') { $Architecture = 'x64' }
 . $ProfileScriptPath
