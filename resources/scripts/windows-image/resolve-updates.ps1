@@ -685,7 +685,11 @@ if ($ResolveOnly) {
         profile         = $profileInfo.Name
         product         = $profileInfo.Product
         windowsVersion  = $profileInfo.WindowsVersion
+        release         = $profileInfo.Release
         windowsBuild    = $profileInfo.Build
+
+        artifactRoot    = $profileInfo.ArtifactRoot
+        isoPrefix       = $profileInfo.IsoPrefix
 
         kb              = $selected.KB
         build           = $selected.Build
@@ -832,7 +836,11 @@ $resolvedObject = [ordered]@{
     profile         = $profileInfo.Name
     product         = $profileInfo.Product
     windowsVersion  = $profileInfo.WindowsVersion
+    release         = $profileInfo.Release
     windowsBuild    = $profileInfo.Build
+
+    artifactRoot    = $profileInfo.ArtifactRoot
+    isoPrefix       = $profileInfo.IsoPrefix
 
     kb              = $selected.KB
     build           = $selected.Build
