@@ -354,9 +354,8 @@ function Get-CatalogCandidates {
         # Product/version
         # ----------------------------------------------------
 
-        if (
-            $p -notmatch
-            [regex]::Escape($profileInfo.WindowsVersion)
+       if (
+            $p -notmatch $profileInfo.CatalogProductPattern
         ) {
             continue
         }
