@@ -265,11 +265,13 @@ function Download-Artifact {
     Write-Host "Destination:"
     Write-Host "  $Destination"
 
+    $targetDir = $dir
+
     & jf rt download `
         --server-id=local-artifactory `
         --flat=true `
         $spec `
-        "$dir\" `
+        $targetDir `
         2>&1 |
         ForEach-Object {
             Write-Host $_
