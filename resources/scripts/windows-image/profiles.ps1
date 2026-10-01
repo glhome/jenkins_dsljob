@@ -30,13 +30,13 @@ function Get-WindowsImageProfile {
                 WindowsVersion = 'Windows 10 21H2'
                 CatalogProductPattern = 'Windows 10,\s*version 21H2'
                 Release        = '21H2'
-                Build          = '19044'
-                BuildRegex     = '19044\.\d+'
+                Build          = '19041'
+                BuildRegex     = '19041\.\d+'
                 CatalogQuery   = 'Windows 10 Version 21H2 cumulative update x64'
                 ArtifactRoot   = 'Windows10/21H2'
                 IsoPrefix      = 'Windows10-21H2'
-                BaseIsoArtifact = 'Windows10/21H2/x64/base/19044.1288.211006-0501.21h2_release_svc_refresh_CLIENT_BUSINESS_VOL_x64FRE_en-us.iso'
-                BaseIsoSha256   = '1323fd1ef0cbfd4bf23fa56a6538ff69dd410ad49969983fee3df936a6c811c5'
+                BaseIsoArtifact = 'Windows10/21H2/x64/base/en-us_windows_10_iot_enterprise_ltsc_2021_x64_dvd_257ad90f.iso'
+                BaseIsoSha256   = 'a0334f31ea7a3e6932b9ad7206608248f0bd40698bfb8fc65f14fc5e4976c160'
             }
         }
         default {
