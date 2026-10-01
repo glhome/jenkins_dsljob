@@ -30,7 +30,7 @@ function Get-WindowsImageProfile {
                 Name           = 'windows10-21h2'
                 Product        = 'Windows10'
                 WindowsVersion = 'Windows 10 21H2'
-                CatalogProductPattern = 'Windows 10,\s*version 21H2'
+                CatalogProductPattern = '(?i)Windows 10\s*,?\s*version 21H2'
                 CatalogBuildRequired  = $false
                 CatalogSecurityUpdatesRequired = $false
                 Release        = '21H2'
