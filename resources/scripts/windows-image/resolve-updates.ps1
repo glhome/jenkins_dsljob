@@ -354,7 +354,7 @@ function Get-CatalogCandidates {
         # Product/version
         # ----------------------------------------------------
 
-       if (
+        if (
             $p -notmatch $profileInfo.CatalogProductPattern
         ) {
             continue
@@ -422,12 +422,17 @@ function Get-CatalogCandidates {
         # ----------------------------------------------------
         # Build
         #
-        # Example:
-        #   (26100.9457)
-        #   (19044.7727)
+        # Windows 11:
+        #   Catalog title contains (26100.x)
+        #
+        # Windows 10:
+        #   Catalog title does not reliably contain (19044.x)
         # ----------------------------------------------------
 
-       if ($profileInfo.CatalogBuildRequired) {
+        $build = ''
+
+        if ($profileInfo.CatalogBuildRequired) {
+
             $b = [regex]::Match(
                 $p,
                 "\(($($profileInfo.BuildRegex))\)"
@@ -436,6 +441,8 @@ function Get-CatalogCandidates {
             if (-not $b.Success) {
                 continue
             }
+
+            $build = $b.Groups[1].Value
         }
 
         # ----------------------------------------------------
@@ -446,6 +453,15 @@ function Get-CatalogCandidates {
             $p,
             '(\d{1,2}/\d{1,2}/\d{4})'
         )
+
+        if ($d.Success) {
+            $releaseDate = [datetime]::Parse(
+                $d.Groups[1].Value
+            )
+        }
+        else {
+            $releaseDate = [datetime]::MinValue
+        }
 
         # ----------------------------------------------------
         # Update IDs
@@ -459,23 +475,14 @@ function Get-CatalogCandidates {
             ForEach-Object Value |
             Select-Object -Unique
 
+        # ----------------------------------------------------
+        # Create candidate object
+        # ----------------------------------------------------
+
         $out += [pscustomobject]@{
-            KB = "KB$($k.Groups[1].Value)"
-
-            $build = ''
-
-            if ($profileInfo.CatalogBuildRequired) {
-                $build = $b.Groups[1].Value
-            }
-
-            Date =
-                if ($d.Success) {
-                    [datetime]::Parse($d.Groups[1].Value)
-                }
-                else {
-                    [datetime]::MinValue
-                }
-
+            KB        = "KB$($k.Groups[1].Value)"
+            Build     = $build
+            Date      = $releaseDate
             Title     = $p
             UpdateIds = @($ids)
         }
