@@ -14,6 +14,7 @@ function Get-WindowsImageProfile {
                 WindowsVersion = 'Windows 11 24H2'
                 CatalogProductPattern = 'Windows 11,\s*version 24H2'
                 CatalogBuildRequired  = $true
+                CatalogSecurityUpdatesRequired = $true
                 Release        = '24H2'
                 Build          = '26100'
                 BuildRegex     = '26100\.\d+'
@@ -31,6 +32,7 @@ function Get-WindowsImageProfile {
                 WindowsVersion = 'Windows 10 21H2'
                 CatalogProductPattern = 'Windows 10,\s*version 21H2'
                 CatalogBuildRequired  = $false
+                CatalogSecurityUpdatesRequired = $false
                 Release        = '21H2'
                 Build          = '19044'
                 BuildRegex     = '19044\.\d+'

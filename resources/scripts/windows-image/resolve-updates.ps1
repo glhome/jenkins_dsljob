@@ -368,8 +368,10 @@ function Get-CatalogCandidates {
             continue
         }
 
-        if ($p -notmatch '(?i)Security Updates') {
-            continue
+        if ($profileInfo.CatalogSecurityUpdatesRequired) {
+            if ($p -notmatch '(?i)Security Updates') {
+                continue
+            }
         }
 
         # ----------------------------------------------------
