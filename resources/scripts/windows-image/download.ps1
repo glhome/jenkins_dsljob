@@ -388,7 +388,6 @@ $resolved =
 
 if (
     -not $resolved.kb -or
-    -not $resolved.build -or
     -not $resolved.updateId -or
     -not $resolved.fileName
 ) {
