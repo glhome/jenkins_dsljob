@@ -6,11 +6,11 @@ def call(Map cfg = [:]) {
     // matching base ISO and checksum. Explicit values still override them.
     def profileBaseIsoArtifact = [
         'windows11-24h2': 'Windows11/24H2/x64/base/en-us_windows_11_iot_enterprise_version_24h2_x64_dvd_3a99b72b.iso',
-        'windows10-21h2': 'Windows10/21H2/x64/base/19044.1288.211006-0501.21h2_release_svc_refresh_CLIENT_BUSINESS_VOL_x64FRE_en-us.iso'
+        'windows10-21h2': 'Windows10/21H2/x64/base/en-us_windows_10_iot_enterprise_ltsc_2021_x64_dvd_257ad90f.iso'
     ]
     def profileBaseIsoSha256 = [
         'windows11-24h2': 'eceb8dc167077e07f9a9bd04e472ea542944974b81b2ebc25477772a71bdbb69',
-        'windows10-21h2': '1323fd1ef0cbfd4bf23fa56a6538ff69dd410ad49969983fee3df936a6c811c5'
+        'windows10-21h2': 'a0334f31ea7a3e6932b9ad7206608248f0bd40698bfb8fc65f14fc5e4976c160'
     ]
 
     def suppliedBaseIsoArtifact = cfg.baseIsoArtifact?.toString()?.trim()
