@@ -334,154 +334,148 @@ function Get-CatalogCandidates {
         [string]$Html
     )
 
-    $out = @()
+    $rows = [regex]::Matches(
+        $Html,
+        '(?is)<tr[^>]*>(.*?)</tr>'
+    )
 
-    foreach (
-        $r in [regex]::Matches(
-            $Html,
-            '<tr[^>]*>(.*?)</tr>',
-            [Text.RegularExpressions.RegexOptions]::Singleline
-        )
-    ) {
+    $candidates = @()
 
-        $row = $r.Groups[1].Value
+    foreach ($row in $rows) {
+        $r = $row.Groups[1].Value
 
-        $p = [Net.WebUtility]::HtmlDecode(
-            ($row -replace '<[^>]+>', ' ')
-        ) -replace '\s+', ' '
-
-        # ----------------------------------------------------
-        # Product/version
-        # ----------------------------------------------------
-
-       if (
-            $p -notmatch $profileInfo.CatalogProductPattern
-        ) {
+        # ------------------------------------------------------------
+        # Product / release filtering
+        # ------------------------------------------------------------
+        if ($r -notmatch $profileInfo.CatalogProductPattern) {
             continue
         }
 
-        # ----------------------------------------------------
-        # Cumulative/security update
-        # ----------------------------------------------------
-
-        if ($p -notmatch '(?i)Cumulative Update') {
-            continue
+        # ------------------------------------------------------------
+        # Architecture filtering
+        # ------------------------------------------------------------
+        if ($Architecture -eq 'x64') {
+            if ($r -notmatch '(?i)x64-based Systems') {
+                continue
+            }
+        }
+        elseif ($Architecture -eq 'arm64') {
+            if ($r -notmatch '(?i)ARM64-based Systems') {
+                continue
+            }
         }
 
-        if ($p -notmatch '(?i)Security Updates') {
-            continue
-        }
-
-        # ----------------------------------------------------
-        # Exclusions
-        # ----------------------------------------------------
-
-        if (
-            $p -match '(?i)Preview' -or
-            $p -match '(?i)\.NET' -or
-            $p -match '(?i)Dynamic Update' -or
-            $p -match '(?i)Server'
-        ) {
-            continue
-        }
-
-        # ----------------------------------------------------
-        # Architecture
-        # ----------------------------------------------------
-
-        if (
-            $Architecture -eq 'x64' -and
-            (
-                $p -notmatch '(?i)x64-based Systems' -or
-                $p -match '(?i)ARM64'
-            )
-        ) {
-            continue
-        }
-
-        if (
-            $Architecture -eq 'arm64' -and
-            $p -notmatch '(?i)ARM64-based Systems'
-        ) {
-            continue
-        }
-
-        # ----------------------------------------------------
-        # KB
-        # ----------------------------------------------------
-
-        $k = [regex]::Match(
-            $p,
-            '(?i)\(KB(\d+)\)'
-        )
-
-        if (-not $k.Success) {
-            continue
-        }
-
-        # ----------------------------------------------------
-        # Build
+        # ------------------------------------------------------------
+        # Build filtering
         #
-        # Example:
-        #   (26100.9457)
-        #   (19044.7727)
-        # ----------------------------------------------------
+        # Windows 11 24H2:
+        #   Catalog title contains "(26100.x)"
+        #
+        # Windows 10 21H2:
+        #   Catalog title normally does NOT contain "(19044.x)"
+        #
+        # Therefore the profile controls whether Catalog build
+        # matching is required.
+        # ------------------------------------------------------------
+        if ($profileInfo.CatalogBuildRequired) {
 
-        $b = [regex]::Match(
-            $p,
-            "\(($($profileInfo.BuildRegex))\)"
+            $b = [regex]::Match(
+                $r,
+                "\(($($profileInfo.BuildRegex))\)"
+            )
+
+            if (-not $b.Success) {
+                continue
+            }
+
+            $build = $b.Groups[1].Value
+        }
+        else {
+            # Windows 10 LTSC 2021:
+            # Build is not reliably present in the Catalog title.
+            # Leave it empty here and obtain/validate it later
+            # from the update metadata/MSU.
+            $build = ''
+        }
+
+        # ------------------------------------------------------------
+        # Extract KB
+        # ------------------------------------------------------------
+        $kbMatch = [regex]::Match(
+            $r,
+            '(?i)\bKB(\d{7})\b'
         )
 
-        if (-not $b.Success) {
+        if (-not $kbMatch.Success) {
             continue
         }
 
-        # ----------------------------------------------------
-        # Release date
-        # ----------------------------------------------------
+        $kb = "KB$($kbMatch.Groups[1].Value)"
 
-        $d = [regex]::Match(
-            $p,
-            '(\d{1,2}/\d{1,2}/\d{4})'
+        # ------------------------------------------------------------
+        # Extract date
+        # ------------------------------------------------------------
+        $dateMatch = [regex]::Match(
+            $r,
+            '(?i)(\d{4}-\d{2})'
         )
 
-        # ----------------------------------------------------
-        # Update IDs
-        # ----------------------------------------------------
+        if (-not $dateMatch.Success) {
+            continue
+        }
 
-        $ids =
-            [regex]::Matches(
-                $row,
-                '(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
-            ) |
-            ForEach-Object Value |
-            Select-Object -Unique
+        try {
+            $date = [datetime]::ParseExact(
+                $dateMatch.Groups[1].Value,
+                'yyyy-MM',
+                [System.Globalization.CultureInfo]::InvariantCulture
+            )
+        }
+        catch {
+            continue
+        }
 
-        $out += [pscustomobject]@{
-            KB = "KB$($k.Groups[1].Value)"
+        # ------------------------------------------------------------
+        # Extract Catalog links
+        # ------------------------------------------------------------
+        $links = [regex]::Matches(
+            $r,
+            '(?is)<a[^>]+href=["'']([^"'']+)["''][^>]*>(.*?)</a>'
+        )
 
-            Build =
-                if ($b.Success) {
-                    $b.Groups[1].Value
-                }
-                else {
-                    ''
-                }
+        foreach ($link in $links) {
+            $url = $link.Groups[1].Value
+            $linkText = [System.Net.WebUtility]::HtmlDecode(
+                $link.Groups[2].Value
+            )
 
-            Date =
-                if ($d.Success) {
-                    [datetime]::Parse($d.Groups[1].Value)
-                }
-                else {
-                    [datetime]::MinValue
-                }
+            # Catalog links normally point to the update detail page.
+            if ($url -notmatch '(?i)catalog\.update\.microsoft\.com') {
+                continue
+            }
 
-            Title     = $p
-            UpdateIds = @($ids)
+            $candidates += [pscustomobject]@{
+                KB       = $kb
+                Build    = $build
+                Date     = $date
+                Title    = ([System.Net.WebUtility]::HtmlDecode(
+                                ($r -replace '<[^>]+>', ' ')
+                            ) -replace '\s+', ' ').Trim()
+                UpdateUrl = $url
+                LinkText  = $linkText
+            }
         }
     }
 
-    return @($out)
+    # ------------------------------------------------------------
+    # Remove duplicate KBs / links and return newest first.
+    # ------------------------------------------------------------
+    $candidates |
+        Sort-Object Date -Descending |
+        Group-Object KB |
+        ForEach-Object {
+            $_.Group | Select-Object -First 1
+        }
 }
 
 # ============================================================
