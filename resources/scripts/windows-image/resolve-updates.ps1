@@ -427,13 +427,15 @@ function Get-CatalogCandidates {
         #   (19044.7727)
         # ----------------------------------------------------
 
-        $b = [regex]::Match(
-            $p,
-            "\(($($profileInfo.BuildRegex))\)"
-        )
+       if ($profileInfo.CatalogBuildRequired) {
+            $b = [regex]::Match(
+                $p,
+                "\(($($profileInfo.BuildRegex))\)"
+            )
 
-        if (-not $b.Success) {
-            continue
+            if (-not $b.Success) {
+                continue
+            }
         }
 
         # ----------------------------------------------------
@@ -460,13 +462,11 @@ function Get-CatalogCandidates {
         $out += [pscustomobject]@{
             KB = "KB$($k.Groups[1].Value)"
 
-            Build =
-                if ($b.Success) {
-                    $b.Groups[1].Value
-                }
-                else {
-                    ''
-                }
+            $build = ''
+
+            if ($profileInfo.CatalogBuildRequired) {
+                $build = $b.Groups[1].Value
+            }
 
             Date =
                 if ($d.Success) {
