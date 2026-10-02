@@ -1071,34 +1071,32 @@ if (-not (Test-Path -LiteralPath $localPath)) {
 
 $sha256 = Get-Sha256 $localPath
 
-# ---------------------------------------------------------------------------
-# Determine resulting LCU build.
-#
-# Windows 11 Catalog entries normally provide the build.
-# Windows 10 21H2 Catalog entries may not, so inspect the downloaded MSU.
-# ---------------------------------------------------------------------------
+# Always determine the actual LCU build from the downloaded MSU.
+# This validates the package that will actually be applied to the image.
+$catalogBuild = $selected.Build
 
-$resolvedBuild = $selected.Build
+Write-Host "Inspecting downloaded MSU to determine actual LCU build..."
+$packageBuild = Get-LcuBuildFromMsu `
+    -MsuPath $localPath `
+    -KB $selected.KB
 
-if ([string]::IsNullOrWhiteSpace($resolvedBuild)) {
-
-    Write-Host ''
-    Write-Host 'Catalog did not provide the resulting LCU build.'
-    Write-Host 'Determining build from the downloaded MSU...'
-
-    $resolvedBuild = Get-LcuBuildFromMsu `
-        -MsuPath $localPath
+if ([string]::IsNullOrWhiteSpace($packageBuild)) {
+    throw "Unable to determine LCU build from MSU: $localPath"
 }
 
-if ([string]::IsNullOrWhiteSpace($resolvedBuild)) {
-    throw (
-        "Unable to determine resulting LCU build for " +
-        "$($selected.KB)."
-    )
+# Windows 11 normally has a build from the Catalog.
+# When present, use it as an additional consistency check.
+if (-not [string]::IsNullOrWhiteSpace($catalogBuild) -and
+    $catalogBuild -ne $packageBuild) {
+
+    throw "LCU build mismatch. Catalog=$catalogBuild, MSU package=$packageBuild, KB=$($selected.KB)"
 }
 
-Write-Host ''
-Write-Host "Resolved LCU build: $resolvedBuild"
+$resolvedBuild = $packageBuild
+
+Write-Host "Catalog build : $catalogBuild"
+Write-Host "Package build : $packageBuild"
+Write-Host "Resolved build: $resolvedBuild"
 
 # ---------------------------------------------------------------------------
 # Final manifest
