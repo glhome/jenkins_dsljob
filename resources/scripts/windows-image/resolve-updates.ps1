@@ -810,22 +810,6 @@ $ssuObject = $null
 
 if ($ResolveOnly) {
 
-    $resolveOnlyBuild = $selected.Build
-
-    if (
-        [string]::IsNullOrWhiteSpace($resolveOnlyBuild) -and
-        $profileInfo.Name -eq 'windows10-21h2'
-    ) {
-        Write-Host ''
-        Write-Host 'Windows 10 21H2 Catalog result does not contain the patched build.'
-        Write-Host 'ResolveOnly requires downloading the MSU to determine it.'
-
-        throw (
-            'ResolveOnly cannot determine the Windows 10 LCU build ' +
-            'without downloading the MSU. Run without -ResolveOnly.'
-        )
-    }
-
     $resolvedObject = [ordered]@{
         schemaVersion = '1.1'
 
@@ -841,7 +825,7 @@ if ($ResolveOnly) {
         isoPrefix    = $profileInfo.IsoPrefix
 
         kb          = $selected.KB
-        build       = $resolveOnlyBuild
+        build       = $selected.Build
         releaseDate = $selected.Date.ToString('yyyy-MM-dd')
 
         architecture = $Architecture
