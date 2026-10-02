@@ -471,6 +471,171 @@ function Test-MsuName {
 }
 
 # ---------------------------------------------------------------------------
+# Determine resulting Windows build from the LCU package.
+#
+# Windows 10 21H2 Catalog entries do not reliably contain the resulting
+# OS build. The authoritative build is contained in the LCU package itself.
+# ---------------------------------------------------------------------------
+
+function Get-LcuBuildFromMsu {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$MsuPath
+    )
+
+    if (-not (Test-Path -LiteralPath $MsuPath)) {
+        throw "LCU MSU not found: $MsuPath"
+    }
+
+    $extractDirectory = Join-Path `
+        (Split-Path -Parent $MsuPath) `
+        ("extract-" + [IO.Path]::GetFileNameWithoutExtension($MsuPath))
+
+    if (Test-Path -LiteralPath $extractDirectory) {
+        Remove-Item `
+            -LiteralPath $extractDirectory `
+            -Recurse `
+            -Force
+    }
+
+    New-Item `
+        -ItemType Directory `
+        -Path $extractDirectory `
+        -Force |
+        Out-Null
+
+    Write-Host ''
+    Write-Host 'Inspecting LCU package for resulting Windows build:'
+    Write-Host "  MSU     : $MsuPath"
+    Write-Host "  Extract : $extractDirectory"
+
+    & expand.exe `
+        -F:* `
+        $MsuPath `
+        $extractDirectory `
+        2>&1 |
+        ForEach-Object {
+            Write-Host $_
+        }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            "Failed to extract LCU MSU with expand.exe: " +
+            $MsuPath
+        )
+    }
+
+    $cabs = @(
+        Get-ChildItem `
+            -LiteralPath $extractDirectory `
+            -Filter '*.cab' `
+            -Recurse `
+            -File
+    )
+
+    if ($cabs.Count -eq 0) {
+        throw (
+            "No CAB files were found after extracting LCU MSU: " +
+            $MsuPath
+        )
+    }
+
+    Write-Host ''
+    Write-Host 'CAB files found:'
+
+    foreach ($cab in $cabs) {
+        Write-Host "  $($cab.FullName)"
+    }
+
+    # Prefer the actual cumulative update package.
+    $lcuCab = $cabs |
+        Where-Object {
+            $_.Name -match '(?i)Package_for_RollupFix'
+        } |
+        Select-Object -First 1
+
+    # Some MSUs use a different CAB filename. If there is only one CAB,
+    # it is safe to use it.
+    if (-not $lcuCab -and $cabs.Count -eq 1) {
+        $lcuCab = $cabs[0]
+    }
+
+    if (-not $lcuCab) {
+        throw (
+            "Unable to identify the LCU CAB from MSU. " +
+            "Found $($cabs.Count) CAB files in $extractDirectory."
+        )
+    }
+
+    Write-Host ''
+    Write-Host "Selected LCU CAB: $($lcuCab.FullName)"
+
+    $dismOutput = @(
+        & dism.exe `
+            /Get-PackageInfo `
+            "/PackagePath:$($lcuCab.FullName)" `
+            2>&1
+    )
+
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            "DISM failed to inspect LCU CAB: " +
+            "$($lcuCab.FullName)`n" +
+            ($dismOutput -join "`n")
+        )
+    }
+
+    Write-Host ''
+    Write-Host 'DISM package information:'
+
+    foreach ($line in $dismOutput) {
+        Write-Host "  $line"
+    }
+
+    # DISM normally reports a package version such as:
+    #
+    # 10.0.19044.7727
+    #
+    # Convert that to:
+    #
+    # 19044.7727
+    #
+    $versionMatches = @(
+        $dismOutput |
+            Select-String -Pattern '10\.0\.\d+\.\d+' |
+            ForEach-Object {
+                $_.Matches |
+                    ForEach-Object {
+                        $_.Value
+                    }
+            }
+    )
+
+    if ($versionMatches.Count -eq 0) {
+        throw (
+            "Unable to determine Windows build from LCU package: " +
+            "$($lcuCab.FullName)"
+        )
+    }
+
+    $packageVersion = $versionMatches[0].Trim()
+
+    $build = $packageVersion -replace '^10\.0\.', ''
+
+    if ($build -notmatch '^\d+\.\d+$') {
+        throw (
+            "Invalid Windows build extracted from LCU package: " +
+            "$build"
+        )
+    }
+
+    Write-Host ''
+    Write-Host "Detected LCU build: $build"
+
+    return $build
+}
+
+# ---------------------------------------------------------------------------
 # Resolve latest LCU
 # ---------------------------------------------------------------------------
 
@@ -645,6 +810,22 @@ $ssuObject = $null
 
 if ($ResolveOnly) {
 
+    $resolveOnlyBuild = $selected.Build
+
+    if (
+        [string]::IsNullOrWhiteSpace($resolveOnlyBuild) -and
+        $profileInfo.Name -eq 'windows10-21h2'
+    ) {
+        Write-Host ''
+        Write-Host 'Windows 10 21H2 Catalog result does not contain the patched build.'
+        Write-Host 'ResolveOnly requires downloading the MSU to determine it.'
+
+        throw (
+            'ResolveOnly cannot determine the Windows 10 LCU build ' +
+            'without downloading the MSU. Run without -ResolveOnly.'
+        )
+    }
+
     $resolvedObject = [ordered]@{
         schemaVersion = '1.1'
 
@@ -660,7 +841,7 @@ if ($ResolveOnly) {
         isoPrefix    = $profileInfo.IsoPrefix
 
         kb          = $selected.KB
-        build       = $selected.Build
+        build       = $resolveOnlyBuild
         releaseDate = $selected.Date.ToString('yyyy-MM-dd')
 
         architecture = $Architecture
@@ -811,6 +992,35 @@ if (-not (Test-Path -LiteralPath $localPath)) {
 $sha256 = Get-Sha256 $localPath
 
 # ---------------------------------------------------------------------------
+# Determine resulting LCU build.
+#
+# Windows 11 Catalog entries normally provide the build.
+# Windows 10 21H2 Catalog entries may not, so inspect the downloaded MSU.
+# ---------------------------------------------------------------------------
+
+$resolvedBuild = $selected.Build
+
+if ([string]::IsNullOrWhiteSpace($resolvedBuild)) {
+
+    Write-Host ''
+    Write-Host 'Catalog did not provide the resulting LCU build.'
+    Write-Host 'Determining build from the downloaded MSU...'
+
+    $resolvedBuild = Get-LcuBuildFromMsu `
+        -MsuPath $localPath
+}
+
+if ([string]::IsNullOrWhiteSpace($resolvedBuild)) {
+    throw (
+        "Unable to determine resulting LCU build for " +
+        "$($selected.KB)."
+    )
+}
+
+Write-Host ''
+Write-Host "Resolved LCU build: $resolvedBuild"
+
+# ---------------------------------------------------------------------------
 # Final manifest
 # ---------------------------------------------------------------------------
 
@@ -829,7 +1039,7 @@ $resolvedObject = [ordered]@{
     isoPrefix    = $profileInfo.IsoPrefix
 
     kb          = $selected.KB
-    build       = $selected.Build
+    build       = $resolvedBuild
     releaseDate = $selected.Date.ToString('yyyy-MM-dd')
 
     architecture = $Architecture
@@ -883,7 +1093,7 @@ Write-Host "Windows       : $($profileInfo.WindowsVersion)"
 Write-Host "Windows Build : $($profileInfo.Build)"
 Write-Host "Architecture  : $Architecture"
 Write-Host "KB            : $($selected.KB)"
-Write-Host "LCU Build     : $($selected.Build)"
+Write-Host "LCU Build     : $($resolvedBuild)"
 Write-Host "Release Date  : $($selected.Date.ToString('yyyy-MM-dd'))"
 Write-Host "UpdateID      : $($chosen.UpdateId)"
 Write-Host "MSU           : $($chosen.FileName)"
