@@ -265,7 +265,7 @@ function Download-Artifact {
     Write-Host "Destination:"
     Write-Host "  $Destination"
 
-    $targetDir = $dir
+    $targetDir = $Destination
 
     & jf rt download `
         --server-id=local-artifactory `
