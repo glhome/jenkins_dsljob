@@ -480,7 +480,10 @@ function Test-MsuName {
 function Get-LcuBuildFromMsu {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$MsuPath
+        [string]$MsuPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$KB
     )
 
     if (-not (Test-Path -LiteralPath $MsuPath)) {
@@ -547,61 +550,154 @@ function Get-LcuBuildFromMsu {
         Write-Host "  $($cab.FullName)"
     }
 
-    # Prefer the actual cumulative update package.
-    $lcuCab = $cabs |
+    # -----------------------------------------------------------------------
+    # Inspect every CAB.
+    #
+    # Do not rely on the CAB filename. Windows 10 combined MSUs can contain
+    # an SSU CAB, the LCU CAB, and WSUSSCAN.cab.
+    # -----------------------------------------------------------------------
+
+    $kbNumber = $KB -replace '^KB', ''
+
+    $candidatePackages = @()
+
+    foreach ($cab in $cabs) {
+
+        # WSUSSCAN.cab is metadata/scanning content, not the LCU.
+        if ($cab.Name -match '(?i)^WSUSSCAN\.cab$') {
+            Write-Host ''
+            Write-Host "Skipping WSUS scan CAB: $($cab.Name)"
+            continue
+        }
+
+        Write-Host ''
+        Write-Host "Inspecting CAB: $($cab.Name)"
+
+        $dismOutput = @(
+            & dism.exe `
+                /Get-PackageInfo `
+                "/PackagePath:$($cab.FullName)" `
+                2>&1
+        )
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  DISM could not inspect this CAB."
+            continue
+        }
+
+        $packageText = $dismOutput -join "`n"
+
+        # Display the package identity for troubleshooting.
+        $packageIdentity = (
+            $dismOutput |
+                Select-String -Pattern 'Package Identity\s*:' |
+                Select-Object -First 1
+        )
+
+        if ($packageIdentity) {
+            Write-Host "  $($packageIdentity.Line.Trim())"
+        }
+
+        # -------------------------------------------------------------------
+        # Exclude servicing stack packages.
+        # -------------------------------------------------------------------
+
+        if (
+            $packageText -match '(?i)Servicing Stack' -or
+            $cab.Name -match '(?i)^SSU-'
+        ) {
+            Write-Host '  Identified as SSU. Skipping.'
+            continue
+        }
+
+        # -------------------------------------------------------------------
+        # We want the cumulative/rollup package associated with the KB.
+        #
+        # Accept either:
+        #   KB5129236
+        #   Package_for_RollupFix
+        #
+        # The KB match is preferred because it ties the package to the
+        # update we actually resolved.
+        # -------------------------------------------------------------------
+
+        $isTargetKb =
+            $packageText -match "(?i)KB$([regex]::Escape($kbNumber))"
+
+        $isRollup =
+            $packageText -match '(?i)Package_for_RollupFix'
+
+        if (-not $isTargetKb -and -not $isRollup) {
+            Write-Host '  Not the target LCU package. Skipping.'
+            continue
+        }
+
+        Write-Host '  Candidate LCU package found.'
+
+        $candidatePackages += [pscustomobject]@{
+            CabPath        = $cab.FullName
+            PackageText    = $packageText
+            PackageIdentity = if ($packageIdentity) {
+                $packageIdentity.Line.Trim()
+            }
+            else {
+                ''
+            }
+            TargetKB       = $isTargetKb
+            Rollup         = $isRollup
+        }
+    }
+
+    if ($candidatePackages.Count -eq 0) {
+        throw (
+            "Unable to identify the LCU package from MSU. " +
+            "No CAB contained the target KB $KB or Package_for_RollupFix."
+        )
+    }
+
+    # Prefer a package explicitly containing our target KB.
+    $lcuPackage = $candidatePackages |
         Where-Object {
-            $_.Name -match '(?i)Package_for_RollupFix'
+            $_.TargetKB
         } |
         Select-Object -First 1
 
-    # Some MSUs use a different CAB filename. If there is only one CAB,
-    # it is safe to use it.
-    if (-not $lcuCab -and $cabs.Count -eq 1) {
-        $lcuCab = $cabs[0]
+    if (-not $lcuPackage) {
+        $lcuPackage = $candidatePackages |
+            Where-Object {
+                $_.Rollup
+            } |
+            Select-Object -First 1
     }
 
-    if (-not $lcuCab) {
+    if (-not $lcuPackage) {
         throw (
-            "Unable to identify the LCU CAB from MSU. " +
-            "Found $($cabs.Count) CAB files in $extractDirectory."
+            "Unable to select the LCU package for $KB."
         )
     }
 
     Write-Host ''
-    Write-Host "Selected LCU CAB: $($lcuCab.FullName)"
+    Write-Host 'Selected LCU CAB:'
+    Write-Host "  $($lcuPackage.CabPath)"
 
-    $dismOutput = @(
-        & dism.exe `
-            /Get-PackageInfo `
-            "/PackagePath:$($lcuCab.FullName)" `
-            2>&1
-    )
-
-    if ($LASTEXITCODE -ne 0) {
-        throw (
-            "DISM failed to inspect LCU CAB: " +
-            "$($lcuCab.FullName)`n" +
-            ($dismOutput -join "`n")
-        )
+    if ($lcuPackage.PackageIdentity) {
+        Write-Host "  $($lcuPackage.PackageIdentity)"
     }
 
-    Write-Host ''
-    Write-Host 'DISM package information:'
+    # -----------------------------------------------------------------------
+    # Extract the package version.
+    #
+    # Example:
+    #
+    #   10.0.19044.7727
+    #
+    # becomes:
+    #
+    #   19044.7727
+    # -----------------------------------------------------------------------
 
-    foreach ($line in $dismOutput) {
-        Write-Host "  $line"
-    }
-
-    # DISM normally reports a package version such as:
-    #
-    # 10.0.19044.7727
-    #
-    # Convert that to:
-    #
-    # 19044.7727
-    #
     $versionMatches = @(
-        $dismOutput |
+        $lcuPackage.PackageText |
             Select-String -Pattern '10\.0\.\d+\.\d+' |
             ForEach-Object {
                 $_.Matches |
@@ -614,7 +710,7 @@ function Get-LcuBuildFromMsu {
     if ($versionMatches.Count -eq 0) {
         throw (
             "Unable to determine Windows build from LCU package: " +
-            "$($lcuCab.FullName)"
+            "$($lcuPackage.CabPath)"
         )
     }
 
@@ -625,7 +721,7 @@ function Get-LcuBuildFromMsu {
     if ($build -notmatch '^\d+\.\d+$') {
         throw (
             "Invalid Windows build extracted from LCU package: " +
-            "$build"
+            $build
         )
     }
 
