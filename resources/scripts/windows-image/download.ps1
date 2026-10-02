@@ -238,7 +238,7 @@ function Test-ArtifactExists {
 # Helper: Download artifact from Artifactory
 # ============================================================
 
- ```powershell
+
 function Download-Artifact {
     param(
         [Parameter(Mandatory = $true)]
