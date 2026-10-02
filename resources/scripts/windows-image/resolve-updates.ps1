@@ -483,252 +483,473 @@ function Get-LcuBuildFromMsu {
         [string]$MsuPath,
 
         [Parameter(Mandatory = $true)]
-        [string]$KB
+        [string]$KB,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Profile,
+
+        [string]$CatalogBuild = ''
     )
 
-    if (-not (Test-Path -LiteralPath $MsuPath)) {
+    if (-not (Test-Path -LiteralPath $MsuPath -PathType Leaf)) {
         throw "LCU MSU not found: $MsuPath"
     }
 
-    $extractDirectory = Join-Path `
-        (Split-Path -Parent $MsuPath) `
-        ("extract-" + [IO.Path]::GetFileNameWithoutExtension($MsuPath))
+    $msuFile = Get-Item -LiteralPath $MsuPath -ErrorAction Stop
 
-    if (Test-Path -LiteralPath $extractDirectory) {
-        Remove-Item `
-            -LiteralPath $extractDirectory `
-            -Recurse `
-            -Force
+    if ($msuFile.Length -eq 0) {
+        throw "LCU MSU is empty: $MsuPath"
     }
 
-    New-Item `
-        -ItemType Directory `
-        -Path $extractDirectory `
-        -Force |
-        Out-Null
+    # -----------------------------------------------------------------------
+    # Locate 7-Zip.
+    # -----------------------------------------------------------------------
 
-    Write-Host ''
-    Write-Host 'Inspecting LCU package for resulting Windows build:'
-    Write-Host "  MSU     : $MsuPath"
-    Write-Host "  Extract : $extractDirectory"
+    $sevenZip = @(
+        'C:\Program Files\7-Zip\7z.exe',
+        'C:\Program Files (x86)\7-Zip\7z.exe'
+    ) |
+        Where-Object {
+            Test-Path -LiteralPath $_ -PathType Leaf
+        } |
+        Select-Object -First 1
 
-    & expand.exe `
-        -F:* `
-        $MsuPath `
-        $extractDirectory `
-        2>&1 |
-        ForEach-Object {
-            Write-Host $_
+    if (-not $sevenZip) {
+
+        $command = Get-Command 7z.exe -ErrorAction SilentlyContinue
+
+        if ($command) {
+            $sevenZip = $command.Source
         }
+    }
 
-    if ($LASTEXITCODE -ne 0) {
+    if (-not $sevenZip) {
         throw (
-            "Failed to extract LCU MSU with expand.exe: " +
-            $MsuPath
+            '7-Zip was not found. Expected ' +
+            'C:\Program Files\7-Zip\7z.exe'
         )
     }
-
-    $cabs = @(
-        Get-ChildItem `
-            -LiteralPath $extractDirectory `
-            -Filter '*.cab' `
-            -Recurse `
-            -File
-    )
-
-    if ($cabs.Count -eq 0) {
-        throw (
-            "No CAB files were found after extracting LCU MSU: " +
-            $MsuPath
-        )
-    }
-
-    Write-Host ''
-    Write-Host 'CAB files found:'
-
-    foreach ($cab in $cabs) {
-        Write-Host "  $($cab.FullName)"
-    }
-
-    # -----------------------------------------------------------------------
-    # Inspect every CAB.
-    #
-    # Do not rely on the CAB filename. Windows 10 combined MSUs can contain
-    # an SSU CAB, the LCU CAB, and WSUSSCAN.cab.
-    # -----------------------------------------------------------------------
 
     $kbNumber = $KB -replace '^KB', ''
 
-    $candidatePackages = @()
+    Write-Host ''
+    Write-Host 'Inspecting LCU MSU:'
+    Write-Host "  MSU       : $($msuFile.FullName)"
+    Write-Host "  Size      : $($msuFile.Length) bytes"
+    Write-Host "  Profile   : $Profile"
+    Write-Host "  KB        : $KB"
+    Write-Host "  7-Zip     : $sevenZip"
 
-    foreach ($cab in $cabs) {
+    # -----------------------------------------------------------------------
+    # Windows 11 24H2
+    #
+    # Windows 11 24H2 cumulative updates contain the LCU payload as a WIM
+    # rather than the Windows 10-style LCU CAB.
+    #
+    # The Microsoft Catalog provides the resulting 26100.x build, so we
+    # verify that the requested KB WIM exists and use the Catalog build.
+    # -----------------------------------------------------------------------
 
-        # WSUSSCAN.cab is metadata/scanning content, not the LCU.
-        if ($cab.Name -match '(?i)^WSUSSCAN\.cab$') {
-            Write-Host ''
-            Write-Host "Skipping WSUS scan CAB: $($cab.Name)"
-            continue
+    if ($Profile -eq 'windows11-24h2') {
+
+        if ([string]::IsNullOrWhiteSpace($CatalogBuild)) {
+            throw (
+                "Windows 11 24H2 requires a Catalog build for $KB."
+            )
         }
 
-        Write-Host ''
-        Write-Host "Inspecting CAB: $($cab.Name)"
+        $expectedWimPattern =
+            "(?i)^Windows11\.0-KB$([regex]::Escape($kbNumber))-[^-]+\.wim$"
 
-        $dismOutput = @(
-            & dism.exe `
-                /Get-PackageInfo `
-                "/PackagePath:$($cab.FullName)" `
+        Write-Host ''
+        Write-Host 'Inspecting Windows 11 MSU contents...'
+
+        $listing = @(
+            & $sevenZip `
+                l `
+                $MsuPath `
                 2>&1
         )
 
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "  DISM could not inspect this CAB."
-            continue
+            throw (
+                "7-Zip could not inspect Windows 11 MSU: " +
+                $MsuPath
+            )
         }
 
-        $packageText = $dismOutput -join "`n"
+        $wimName = $null
 
-        # Display the package identity for troubleshooting.
-        $packageIdentity = (
-            $dismOutput |
-                Select-String -Pattern 'Package Identity\s*:' |
-                Select-Object -First 1
-        )
+        foreach ($line in $listing) {
 
-        if ($packageIdentity) {
-            Write-Host "  $($packageIdentity.Line.Trim())"
-        }
+            $text = [string]$line
 
-        # -------------------------------------------------------------------
-        # Exclude servicing stack packages.
-        # -------------------------------------------------------------------
+            if (
+                $text -match
+                '(?i)Windows11\.0-KB\d+-[^ ]+\.wim$'
+            ) {
 
-        if (
-            $packageText -match '(?i)Servicing Stack' -or
-            $cab.Name -match '(?i)^SSU-'
-        ) {
-            Write-Host '  Identified as SSU. Skipping.'
-            continue
-        }
+                $candidateName =
+                    $Matches[0]
 
-        # -------------------------------------------------------------------
-        # We want the cumulative/rollup package associated with the KB.
-        #
-        # Accept either:
-        #   KB5129236
-        #   Package_for_RollupFix
-        #
-        # The KB match is preferred because it ties the package to the
-        # update we actually resolved.
-        # -------------------------------------------------------------------
-
-        $isTargetKb =
-            $packageText -match "(?i)KB$([regex]::Escape($kbNumber))"
-
-        $isRollup =
-            $packageText -match '(?i)Package_for_RollupFix'
-
-        if (-not $isTargetKb -and -not $isRollup) {
-            Write-Host '  Not the target LCU package. Skipping.'
-            continue
-        }
-
-        Write-Host '  Candidate LCU package found.'
-
-        $candidatePackages += [pscustomobject]@{
-            CabPath        = $cab.FullName
-            PackageText    = $packageText
-            PackageIdentity = if ($packageIdentity) {
-                $packageIdentity.Line.Trim()
+                if ($candidateName -match $expectedWimPattern) {
+                    $wimName = $candidateName
+                    break
+                }
             }
-            else {
-                ''
-            }
-            TargetKB       = $isTargetKb
-            Rollup         = $isRollup
         }
+
+        if (-not $wimName) {
+
+            throw (
+                "Windows 11 LCU WIM for $KB was not found " +
+                "inside the MSU: $MsuPath"
+            )
+        }
+
+        Write-Host ''
+        Write-Host 'Windows 11 LCU payload found:'
+        Write-Host "  WIM: $wimName"
+
+        # Verify the SSU is also present in the combined MSU.
+        $ssuName = $null
+
+        foreach ($line in $listing) {
+
+            $text = [string]$line
+
+            if ($text -match '(?i)SSU-\d+\.\d+-[^ ]+\.cab$') {
+                $ssuName = $Matches[0]
+                break
+            }
+        }
+
+        if ($ssuName) {
+            Write-Host "  SSU: $ssuName"
+        }
+        else {
+            Write-Host '  SSU: not detected'
+        }
+
+        Write-Host ''
+        Write-Host "Catalog LCU build: $CatalogBuild"
+        Write-Host 'Package validation: WIM payload found'
+
+        return $CatalogBuild
     }
 
-    if ($candidatePackages.Count -eq 0) {
-        throw (
-            "Unable to identify the LCU package from MSU. " +
-            "No CAB contained the target KB $KB or Package_for_RollupFix."
+    # -----------------------------------------------------------------------
+    # Windows 10 21H2
+    #
+    # Windows 10 cumulative MSUs contain the LCU as a CAB such as:
+    #
+    #   Windows10.0-KB5129236-x64.cab
+    #
+    # Extract the MSU with 7-Zip, locate that CAB, then inspect its MUM
+    # metadata for the actual package version.
+    # -----------------------------------------------------------------------
+
+    if ($Profile -eq 'windows10-21h2') {
+
+        $extractDirectory = Join-Path `
+            (Split-Path -Parent $MsuPath) `
+            ("extract-" + [IO.Path]::GetFileNameWithoutExtension($MsuPath))
+
+        if (Test-Path -LiteralPath $extractDirectory) {
+
+            Remove-Item `
+                -LiteralPath $extractDirectory `
+                -Recurse `
+                -Force
+        }
+
+        New-Item `
+            -ItemType Directory `
+            -Path $extractDirectory `
+            -Force |
+            Out-Null
+
+        Write-Host ''
+        Write-Host 'Extracting Windows 10 MSU with 7-Zip:'
+        Write-Host "  $extractDirectory"
+
+        & $sevenZip `
+            x `
+            $MsuPath `
+            "-o$extractDirectory" `
+            '-y' `
+            2>&1 |
+            ForEach-Object {
+                Write-Host $_
+            }
+
+        if ($LASTEXITCODE -ne 0) {
+            throw (
+                "7-Zip failed to extract Windows 10 MSU: " +
+                $MsuPath
+            )
+        }
+
+        $cabs = @(
+            Get-ChildItem `
+                -LiteralPath $extractDirectory `
+                -Filter '*.cab' `
+                -Recurse `
+                -File
         )
-    }
 
-    # Prefer a package explicitly containing our target KB.
-    $lcuPackage = $candidatePackages |
-        Where-Object {
-            $_.TargetKB
-        } |
-        Select-Object -First 1
+        if ($cabs.Count -eq 0) {
+            throw (
+                "No CAB files found after extracting Windows 10 MSU: " +
+                $MsuPath
+            )
+        }
 
-    if (-not $lcuPackage) {
-        $lcuPackage = $candidatePackages |
+        Write-Host ''
+        Write-Host 'CAB files found:'
+
+        foreach ($cab in $cabs) {
+            Write-Host "  $($cab.Name)"
+        }
+
+        # -------------------------------------------------------------------
+        # Locate the LCU CAB by the exact KB.
+        #
+        # This avoids relying on DISM /Get-PackageInfo, which is not
+        # available on the DISM version installed on this build agent.
+        # -------------------------------------------------------------------
+
+        $lcuCab = $cabs |
             Where-Object {
-                $_.Rollup
+                $_.Name -match (
+                    "(?i)^Windows10\.0-KB$([regex]::Escape($kbNumber))-"
+                )
             } |
             Select-Object -First 1
-    }
 
-    if (-not $lcuPackage) {
-        throw (
-            "Unable to select the LCU package for $KB."
-        )
-    }
+        if (-not $lcuCab) {
 
-    Write-Host ''
-    Write-Host 'Selected LCU CAB:'
-    Write-Host "  $($lcuPackage.CabPath)"
+            throw (
+                "Windows 10 LCU CAB for $KB was not found in MSU: " +
+                $MsuPath
+            )
+        }
 
-    if ($lcuPackage.PackageIdentity) {
-        Write-Host "  $($lcuPackage.PackageIdentity)"
-    }
+        Write-Host ''
+        Write-Host 'Selected Windows 10 LCU CAB:'
+        Write-Host "  $($lcuCab.FullName)"
 
-    # -----------------------------------------------------------------------
-    # Extract the package version.
-    #
-    # Example:
-    #
-    #   10.0.19044.7727
-    #
-    # becomes:
-    #
-    #   19044.7727
-    # -----------------------------------------------------------------------
+        # -------------------------------------------------------------------
+        # Extract the LCU CAB.
+        #
+        # The CAB itself is small enough for 7-Zip to process normally.
+        # -------------------------------------------------------------------
 
-    $versionMatches = @(
-        $lcuPackage.PackageText |
-            Select-String -Pattern '10\.0\.\d+\.\d+' |
+        $cabExtractDirectory = Join-Path `
+            $extractDirectory `
+            'lcu-cab'
+
+        New-Item `
+            -ItemType Directory `
+            -Path $cabExtractDirectory `
+            -Force |
+            Out-Null
+
+        Write-Host ''
+        Write-Host 'Extracting LCU CAB...'
+
+        & $sevenZip `
+            x `
+            $lcuCab.FullName `
+            "-o$cabExtractDirectory" `
+            '-y' `
+            2>&1 |
             ForEach-Object {
-                $_.Matches |
-                    ForEach-Object {
-                        $_.Value
-                    }
+                Write-Host $_
             }
-    )
 
-    if ($versionMatches.Count -eq 0) {
-        throw (
-            "Unable to determine Windows build from LCU package: " +
-            "$($lcuPackage.CabPath)"
+        if ($LASTEXITCODE -ne 0) {
+            throw (
+                "7-Zip failed to extract LCU CAB: " +
+                $lcuCab.FullName
+            )
+        }
+
+        # -------------------------------------------------------------------
+        # Locate MUM package metadata.
+        # -------------------------------------------------------------------
+
+        $mumFiles = @(
+            Get-ChildItem `
+                -LiteralPath $cabExtractDirectory `
+                -Filter '*.mum' `
+                -Recurse `
+                -File
         )
+
+        if ($mumFiles.Count -eq 0) {
+            throw (
+                "No MUM package metadata found in LCU CAB: " +
+                $lcuCab.FullName
+            )
+        }
+
+        Write-Host ''
+        Write-Host "MUM files found: $($mumFiles.Count)"
+
+        # -------------------------------------------------------------------
+        # Find the package whose identity/version corresponds to the target
+        # cumulative update.
+        # -------------------------------------------------------------------
+
+        $matchingMums = @()
+
+        foreach ($mum in $mumFiles) {
+
+            try {
+                $mumText = Get-Content `
+                    -LiteralPath $mum.FullName `
+                    -Raw `
+                    -ErrorAction Stop
+            }
+            catch {
+                continue
+            }
+
+            if (
+                $mumText -match
+                "(?i)KB$([regex]::Escape($kbNumber))"
+            ) {
+
+                $matchingMums += [pscustomobject]@{
+                    Path = $mum.FullName
+                    Text = $mumText
+                }
+            }
+        }
+
+        # If the KB is not explicitly present in the MUM, look for
+        # Package_for_RollupFix as a fallback.
+        if ($matchingMums.Count -eq 0) {
+
+            foreach ($mum in $mumFiles) {
+
+                try {
+                    $mumText = Get-Content `
+                        -LiteralPath $mum.FullName `
+                        -Raw `
+                        -ErrorAction Stop
+                }
+                catch {
+                    continue
+                }
+
+                if (
+                    $mumText -match
+                    '(?i)Package_for_RollupFix'
+                ) {
+
+                    $matchingMums += [pscustomobject]@{
+                        Path = $mum.FullName
+                        Text = $mumText
+                    }
+                }
+            }
+        }
+
+        if ($matchingMums.Count -eq 0) {
+
+            throw (
+                "Unable to identify the LCU package metadata for " +
+                "$KB in $($lcuCab.Name)."
+            )
+        }
+
+        Write-Host ''
+        Write-Host 'Matching LCU package metadata:'
+
+        foreach ($mum in $matchingMums) {
+            Write-Host "  $($mum.Path)"
+        }
+
+        # -------------------------------------------------------------------
+        # Extract Windows package versions.
+        #
+        # Expected:
+        #
+        #   10.0.19044.7727
+        #
+        # The MUM package identity may also contain:
+        #
+        #   ~~19044.7727.1.1
+        # -------------------------------------------------------------------
+
+        $versions = @()
+
+        foreach ($mum in $matchingMums) {
+
+            $text = $mum.Text
+
+            $matches = [regex]::Matches(
+                $text,
+                '10\.0\.(\d+\.\d+)'
+            )
+
+            foreach ($match in $matches) {
+
+                $versions += $match.Groups[1].Value
+            }
+
+            # Package identity fallback.
+            $revisionMatches = [regex]::Matches(
+                $text,
+                '~~(\d+\.\d+)\.\d+\.\d+'
+            )
+
+            foreach ($match in $revisionMatches) {
+
+                $versions += $match.Groups[1].Value
+            }
+        }
+
+        $versions =
+            $versions |
+            Where-Object {
+                $_ -match '^\d+\.\d+$'
+            } |
+            Sort-Object -Unique
+
+        if ($versions.Count -eq 0) {
+
+            throw (
+                "Unable to determine Windows build from LCU MUM metadata: " +
+                $lcuCab.FullName
+            )
+        }
+
+        # Select the highest package version.
+        $packageBuild =
+            $versions |
+            Sort-Object {
+                [version]$_
+            } -Descending |
+            Select-Object -First 1
+
+        if ($packageBuild -notmatch '^\d+\.\d+$') {
+
+            throw (
+                "Invalid Windows build extracted from LCU package: " +
+                $packageBuild
+            )
+        }
+
+        Write-Host ''
+        Write-Host "Detected Windows 10 LCU build: $packageBuild"
+
+        return $packageBuild
     }
 
-    $packageVersion = $versionMatches[0].Trim()
-
-    $build = $packageVersion -replace '^10\.0\.', ''
-
-    if ($build -notmatch '^\d+\.\d+$') {
-        throw (
-            "Invalid Windows build extracted from LCU package: " +
-            $build
-        )
-    }
-
-    Write-Host ''
-    Write-Host "Detected LCU build: $build"
-
-    return $build
+    throw "Unsupported Windows image profile: $Profile"
 }
 
 # ---------------------------------------------------------------------------
