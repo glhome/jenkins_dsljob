@@ -238,109 +238,77 @@ function Test-ArtifactExists {
 # Helper: Download artifact from Artifactory
 # ============================================================
 
- function Download-Artifact {
-     param(
-         [Parameter(Mandatory = $true)]
-         [string]$Path,
+ ```powershell
+function Download-Artifact {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
 
-         [Parameter(Mandatory = $true)]
-         [string]$Destination,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
 
-         [string]$ExpectedSha256 = ''
-     )
+        [string]$ExpectedSha256 = ''
+    )
 
--    $spec = "$ArtifactoryRepo/$Path"
-+    $uri = Get-ArtifactUrl $Path
+    $uri = Get-ArtifactUrl $Path
 
-     $dir = Split-Path -Parent $Destination
+    $dir = Split-Path -Parent $Destination
 
-     New-Item `
-         -ItemType Directory `
-         -Force `
-         -Path $dir |
-         Out-Null
+    New-Item `
+        -ItemType Directory `
+        -Force `
+        -Path $dir |
+        Out-Null
 
-     Write-Host ''
-     Write-Host "Downloading Artifactory artifact:"
--    Write-Host "  $spec"
-+    Write-Host "  $uri"
-     Write-Host "Destination:"
-     Write-Host "  $Destination"
+    Write-Host ''
+    Write-Host "Downloading Artifactory artifact:"
+    Write-Host "  $uri"
+    Write-Host "Destination:"
+    Write-Host "  $Destination"
 
--    & jf rt download `
--        --server-id=local-artifactory `
--        --flat=true `
--        $spec `
--        $dir\ `
--        2>&1 |
--        ForEach-Object {
--            Write-Host $_
-+    try {
-+        Invoke-WebRequest `
-+            -Uri $uri `
-+            -Headers $headers `
-+            -Method Get `
-+            -UseBasicParsing `
-+            -OutFile $Destination `
-+            -TimeoutSec 1800 `
-+            -ErrorAction Stop
-+    }
-+    catch {
-+        throw (
-+            "Artifactory download failed: $uri`n" +
-+            $_.Exception.Message
-+        )
-     }
+    try {
+        Invoke-WebRequest `
+            -Uri $uri `
+            -Headers $headers `
+            -Method Get `
+            -UseBasicParsing `
+            -OutFile $Destination `
+            -TimeoutSec 1800 `
+            -ErrorAction Stop
+    }
+    catch {
+        throw (
+            "Artifactory download failed: $uri`n" +
+            $_.Exception.Message
+        )
+    }
 
--    $exitCode = $LASTEXITCODE
--
--    if ($exitCode -ne 0) {
--        throw `
--            "JFrog download failed with exit code ${exitCode}: $spec"
--    }
--
--    $source = Join-Path `
--        $dir `
--        ([IO.Path]::GetFileName($Path))
--
--    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
--        throw "Downloaded artifact not found: $source"
-+    if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
-+        throw "Downloaded artifact not found: $Destination"
-     }
+    if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+        throw "Downloaded artifact not found: $Destination"
+    }
 
--    if ($source -ne $Destination) {
--        Move-Item `
--            -LiteralPath $source `
--            -Destination $Destination `
--            -Force
--    }
--
-     if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256)) {
--
-         $actual = Get-Sha256 $Destination
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256)) {
+        $actual = Get-Sha256 $Destination
 
-         if (
-             $actual -ne
-             $ExpectedSha256.ToLowerInvariant()
-         ) {
--            throw `
--                "SHA256 mismatch for $Path. " +
--                "Expected $ExpectedSha256, actual $actual"
-+            Remove-Item `
-+                -LiteralPath $Destination `
-+                -Force `
-+                -ErrorAction SilentlyContinue
-+
-+            throw (
-+                "SHA256 mismatch for $Path. " +
-+                "Expected $ExpectedSha256, actual $actual"
-+            )
-         }
-+
-+        Write-Host "SHA256 verified: $actual"
-     }
- }
+        if (
+            $actual -ne
+            $ExpectedSha256.ToLowerInvariant()
+        ) {
+            Remove-Item `
+                -LiteralPath $Destination `
+                -Force `
+                -ErrorAction SilentlyContinue
+
+            throw (
+                "SHA256 mismatch for $Path. " +
+                "Expected $ExpectedSha256, actual $actual"
+            )
+        }
+
+        Write-Host "SHA256 verified: $actual"
+    }
+}
+
 # ============================================================
 # Resolve LCU
 #
