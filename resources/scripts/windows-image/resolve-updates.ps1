@@ -1299,8 +1299,10 @@ $catalogBuild = $selected.Build
 Write-Host "Inspecting downloaded MSU to determine actual LCU build..."
 $packageBuild = Get-LcuBuildFromMsu `
     -MsuPath $localPath `
-    -KB $selected.KB
-
+    -KB $selected.KB `
+    -Profile $Profile `
+    -CatalogBuild $catalogBuild
+ 
 if ([string]::IsNullOrWhiteSpace($packageBuild)) {
     throw "Unable to determine LCU build from MSU: $localPath"
 }
