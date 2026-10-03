@@ -1,3 +1,4 @@
+```powershell
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
@@ -22,6 +23,13 @@ param(
 
     [Parameter(Mandatory = $true)]
     [string]$ArtifactoryPassword,
+
+    [string]$ArtifactoryToken = '',
+
+    [ValidateSet('InvokeWebRequest', 'JFrog')]
+    [string]$ArtifactTransferMethod = 'InvokeWebRequest',
+
+    [string]$JfPath = 'jf.exe',
 
     [Parameter(Mandatory = $true)]
     [string]$ResolverScriptPath,
@@ -98,16 +106,76 @@ else {
 
 # ============================================================
 # Authentication
+#
+# Invoke-WebRequest:
+#   Prefer Bearer token when supplied.
+#   Otherwise use Basic authentication.
+#
+# JFrog:
+#   Prefer access token when supplied.
+#   Otherwise use user/password.
 # ============================================================
 
-$pair = '{0}:{1}' -f $ArtifactoryUser, $ArtifactoryPassword
+$headers = @{}
 
-$headers = @{
-    Authorization =
+if (-not [string]::IsNullOrWhiteSpace($ArtifactoryToken)) {
+    $headers['Authorization'] = "Bearer $ArtifactoryToken"
+}
+else {
+    $pair = '{0}:{1}' -f $ArtifactoryUser, $ArtifactoryPassword
+
+    $headers['Authorization'] =
         'Basic ' +
         [Convert]::ToBase64String(
             [Text.Encoding]::ASCII.GetBytes($pair)
         )
+}
+
+# ============================================================
+# Validate JFrog configuration
+# ============================================================
+
+function Assert-JFrogAvailable {
+
+    if (-not (Get-Command $JfPath -ErrorAction SilentlyContinue)) {
+        throw (
+            "ArtifactTransferMethod is 'JFrog', but jf.exe was not found. " +
+            "JfPath='$JfPath'"
+        )
+    }
+
+    Write-Host "JFrog CLI: $JfPath"
+}
+
+# ============================================================
+# JFrog authentication arguments
+# ============================================================
+
+function Get-JFrogAuthArguments {
+
+    if (-not [string]::IsNullOrWhiteSpace($ArtifactoryToken)) {
+        return @(
+            '--access-token'
+            $ArtifactoryToken
+        )
+    }
+
+    if (
+        -not [string]::IsNullOrWhiteSpace($ArtifactoryUser) -and
+        -not [string]::IsNullOrWhiteSpace($ArtifactoryPassword)
+    ) {
+        return @(
+            '--user'
+            $ArtifactoryUser
+            '--password'
+            $ArtifactoryPassword
+        )
+    }
+
+    throw (
+        'JFrog authentication requires ArtifactoryToken or ' +
+        'ArtifactoryUser/ArtifactoryPassword.'
+    )
 }
 
 # ============================================================
@@ -121,6 +189,64 @@ function Get-ArtifactUrl {
     )
 
     return "$ArtifactoryUrlRoot/$ArtifactoryRepo/$($Path.TrimStart('/'))"
+}
+
+# ============================================================
+# Helper: Convert Artifactory URL to JFrog repository path
+#
+# Example:
+#
+#   https://server/artifactory/snapshot-generic-local/
+#       Windows11/24H2/x64/base/foo.iso
+#
+# becomes:
+#
+#   snapshot-generic-local/Windows11/24H2/x64/base/foo.iso
+# ============================================================
+
+function ConvertTo-JFrogArtifactPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    return (
+        "$ArtifactoryRepo/$($Path.TrimStart('/'))"
+    )
+}
+
+# ============================================================
+# Helper: Run jf.exe
+# ============================================================
+
+function Invoke-JFrog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    Assert-JFrogAvailable
+
+    Write-Host ''
+    Write-Host "Executing JFrog CLI:"
+    Write-Host "  $JfPath $($Arguments -join ' ')"
+
+    #
+    # Do not redirect stdout into a PowerShell object here.
+    # jf.exe's normal output should remain visible in Jenkins.
+    #
+    & $JfPath @Arguments
+
+    $exitCode = $LASTEXITCODE
+
+    if ($exitCode -ne 0) {
+        throw (
+            "jf.exe failed with exit code $exitCode. " +
+            "Arguments: $($Arguments -join ' ')"
+        )
+    }
+
+    return $exitCode
 }
 
 # ============================================================
@@ -144,6 +270,9 @@ function Get-Sha256 {
 # Helper: Get text artifact from Artifactory
 #
 # Handles UTF-8 BOM safely.
+#
+# JFrog implementation downloads the text artifact to a temporary
+# file and then reads it as UTF-8.
 # ============================================================
 
 function Get-ArtifactText {
@@ -152,49 +281,159 @@ function Get-ArtifactText {
         [string]$Path
     )
 
-    $uri = Get-ArtifactUrl $Path
+    switch ($ArtifactTransferMethod) {
 
-    try {
-        $response = Invoke-WebRequest `
-            -Uri $uri `
-            -Headers $headers `
-            -Method Get `
-            -UseBasicParsing `
-            -TimeoutSec 60 `
-            -ErrorAction Stop
+        'InvokeWebRequest' {
 
-        $stream = $response.RawContentStream
+            $uri = Get-ArtifactUrl $Path
 
-        if ($stream.CanSeek) {
-            $stream.Position = 0
+            try {
+                $response = Invoke-WebRequest `
+                    -Uri $uri `
+                    -Headers $headers `
+                    -Method Get `
+                    -UseBasicParsing `
+                    -TimeoutSec 60 `
+                    -ErrorAction Stop
+
+                $stream = $response.RawContentStream
+
+                if ($stream.CanSeek) {
+                    $stream.Position = 0
+                }
+
+                $utf8 = New-Object `
+                    System.Text.UTF8Encoding($false, $true)
+
+                $reader = New-Object `
+                    System.IO.StreamReader(
+                        $stream,
+                        $utf8,
+                        $true
+                    )
+
+                try {
+                    return $reader.ReadToEnd()
+                }
+                finally {
+                    $reader.Dispose()
+                }
+            }
+            catch {
+                if (
+                    $_.Exception.Response -and
+                    [int]$_.Exception.Response.StatusCode -eq 404
+                ) {
+                    return $null
+                }
+
+                throw
+            }
         }
 
-        $utf8 = New-Object `
-            System.Text.UTF8Encoding($false, $true)
+        'JFrog' {
 
-        $reader = New-Object `
-            System.IO.StreamReader(
-                $stream,
-                $utf8,
-                $true
-            )
+            $tempDir = Join-Path $DownloadDir '.jfrog-text'
 
-        try {
-            return $reader.ReadToEnd()
-        }
-        finally {
-            $reader.Dispose()
-        }
-    }
-    catch {
-        if (
-            $_.Exception.Response -and
-            [int]$_.Exception.Response.StatusCode -eq 404
-        ) {
-            return $null
+            New-Item `
+                -ItemType Directory `
+                -Force `
+                -Path $tempDir |
+                Out-Null
+
+            $tempFile = Join-Path `
+                $tempDir `
+                ([guid]::NewGuid().ToString() + '.txt')
+
+            try {
+
+                $jfArtifact =
+                    ConvertTo-JFrogArtifactPath $Path
+
+                $authArgs =
+                    Get-JFrogAuthArguments
+
+                $jfArgs = @(
+                    'rt'
+                    'dl'
+                    $jfArtifact
+                    $tempDir
+                    '--flat=true'
+                    '--fail-no-op=true'
+                )
+
+                $jfArgs += $authArgs
+
+                Invoke-JFrog `
+                    -Arguments $jfArgs |
+                    Out-Null
+
+                $downloadedFile =
+                    Join-Path `
+                        $tempDir `
+                        (Split-Path $Path -Leaf)
+
+                if (-not (Test-Path -LiteralPath $downloadedFile -PathType Leaf)) {
+                    return $null
+                }
+
+                $bytes =
+                    [IO.File]::ReadAllBytes(
+                        $downloadedFile
+                    )
+
+                #
+                # UTF-8 BOM = EF BB BF.
+                #
+                $offset = 0
+
+                if (
+                    $bytes.Length -ge 3 -and
+                    $bytes[0] -eq 0xEF -and
+                    $bytes[1] -eq 0xBB -and
+                    $bytes[2] -eq 0xBF
+                ) {
+                    $offset = 3
+                }
+
+                $utf8 =
+                    New-Object `
+                        System.Text.UTF8Encoding(
+                            $false,
+                            $true
+                        )
+
+                return $utf8.GetString(
+                    $bytes,
+                    $offset,
+                    $bytes.Length - $offset
+                )
+            }
+            catch {
+                #
+                # jf.exe uses non-zero status for an unsuccessful lookup.
+                # For a text artifact lookup, treat a missing artifact as
+                # not found rather than hiding genuine transfer errors.
+                #
+                if ($_.Exception.Message -match '(?i)404|not found|no artifacts') {
+                    return $null
+                }
+
+                throw
+            }
+            finally {
+                if (Test-Path -LiteralPath $tempFile) {
+                    Remove-Item `
+                        -LiteralPath $tempFile `
+                        -Force `
+                        -ErrorAction SilentlyContinue
+                }
+            }
         }
 
-        throw
+        default {
+            throw "Unsupported ArtifactTransferMethod: $ArtifactTransferMethod"
+        }
     }
 }
 
@@ -208,509 +447,119 @@ function Test-ArtifactExists {
         [string]$Path
     )
 
-    $uri = Get-ArtifactUrl $Path
-
-    try {
-        Invoke-WebRequest `
-            -Uri $uri `
-            -Headers $headers `
-            -Method Head `
-            -UseBasicParsing `
-            -TimeoutSec 60 `
-            -ErrorAction Stop |
-            Out-Null
-
-        return $true
-    }
-    catch {
-        if (
-            $_.Exception.Response -and
-            [int]$_.Exception.Response.StatusCode -eq 404
-        ) {
-            return $false
-        }
-
-        throw
-    }
-}
-
-# ============================================================
-# Helper: Download artifact from Artifactory
-# ============================================================
-
-
-function Download-Artifact {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Destination,
-
-        [string]$ExpectedSha256 = ''
-    )
-
-    $uri = Get-ArtifactUrl $Path
-
-    $dir = Split-Path -Parent $Destination
-
-    New-Item `
-        -ItemType Directory `
-        -Force `
-        -Path $dir |
-        Out-Null
-
-    Write-Host ''
-    Write-Host "Downloading Artifactory artifact:"
-    Write-Host "  $uri"
-    Write-Host "Destination:"
-    Write-Host "  $Destination"
-
-    try {
-        Invoke-WebRequest `
-            -Uri $uri `
-            -Headers $headers `
-            -Method Get `
-            -UseBasicParsing `
-            -OutFile $Destination `
-            -TimeoutSec 1800 `
-            -ErrorAction Stop
-    }
-    catch {
-        throw (
-            "Artifactory download failed: $uri`n" +
-            $_.Exception.Message
-        )
-    }
-
-    if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
-        throw "Downloaded artifact not found: $Destination"
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256)) {
-        $actual = Get-Sha256 $Destination
-
-        if (
-            $actual -ne
-            $ExpectedSha256.ToLowerInvariant()
-        ) {
-            Remove-Item `
-                -LiteralPath $Destination `
-                -Force `
-                -ErrorAction SilentlyContinue
-
-            throw (
-                "SHA256 mismatch for $Path. " +
-                "Expected $ExpectedSha256, actual $actual"
-            )
-        }
-
-        Write-Host "SHA256 verified: $actual"
-    }
-}
-
-# ============================================================
-# Resolve LCU
-#
-# IMPORTANT:
-# resolve-updates.ps1 loads profiles.ps1 itself.
-#
-# DO NOT pass:
-#   -ProfileScriptPath
-# ============================================================
-
-Write-Host ''
-Write-Host '============================================================'
-Write-Host ' Resolve LCU and Check Patched Image Cache'
-Write-Host '============================================================'
-Write-Host "Profile      : $($profileInfo.Name)"
-Write-Host "Windows      : $($profileInfo.WindowsVersion)"
-Write-Host "Windows Build: $($profileInfo.Build)"
-Write-Host "Architecture : $Architecture"
-Write-Host ''
-
-# ============================================================
-# Remove stale cache marker
-# ============================================================
-
-if (Test-Path -LiteralPath $CacheMarker) {
-    Remove-Item `
-        -LiteralPath $CacheMarker `
-        -Force
-}
-
-# ============================================================
-# Resolve-only
-#
-# No MSU download.
-# ============================================================
-
-& $ResolverScriptPath `
-    -WorkRoot $WorkRoot `
-    -Profile $Profile `
-    -Architecture $Architecture `
-    -ArtifactoryBaseUrl $ArtifactoryBaseUrl `
-    -ArtifactoryRepo $ArtifactoryRepo `
-    -ArtifactoryUser $ArtifactoryUser `
-    -ArtifactoryPassword $ArtifactoryPassword `
-    -ResolveOnly
-
-$resolveExit = $LASTEXITCODE
-
-if ($resolveExit -ne 0) {
-    throw `
-        "Update resolver failed with exit code ${resolveExit}"
-}
-
-if (-not (Test-Path -LiteralPath $ResolvedPath -PathType Leaf)) {
-    throw `
-        "Resolved update manifest was not created: $ResolvedPath"
-}
-
-# ============================================================
-# Read resolved update
-# ============================================================
-
-$resolvedJson =
-    Get-Content `
-        -LiteralPath $ResolvedPath `
-        -Raw
-
-$resolvedJson =
-    $resolvedJson.TrimStart([char]0xFEFF)
-
-$resolved =
-    $resolvedJson |
-    ConvertFrom-Json
-
-if (
-    -not $resolved.kb -or
-    -not $resolved.updateId -or
-    -not $resolved.fileName
-) {
-    throw `
-        'Resolved update manifest is missing KB, build, UpdateID, or fileName.'
-}
-
-# ============================================================
-# Resolve artifact information
-# ============================================================
-
-$kb =
-    $resolved.kb.ToString().ToUpperInvariant()
-
-$lcuBuild =
-    $resolved.build.ToString()
-
-$normalizedArch =
-    $Architecture.ToLowerInvariant()
-
-if ($normalizedArch -eq 'amd64') {
-    $normalizedArch = 'x64'
-}
-
-$resolvedWindowsBuild =
-    [string]$resolved.windowsBuild
-
-if ([string]::IsNullOrWhiteSpace($resolvedWindowsBuild)) {
-    $resolvedWindowsBuild =
-        [string]$profileInfo.Build
-}
-
-$artifactRoot =
-    [string]$resolved.artifactRoot
-
-if ([string]::IsNullOrWhiteSpace($artifactRoot)) {
-    $artifactRoot =
-        [string]$profileInfo.ArtifactRoot
-}
-
-$isoPrefix =
-    [string]$resolved.isoPrefix
-
-if ([string]::IsNullOrWhiteSpace($isoPrefix)) {
-    $isoPrefix =
-        [string]$profileInfo.IsoPrefix
-}
-
-if ([string]::IsNullOrWhiteSpace($artifactRoot)) {
-    throw `
-        'Resolved update manifest is missing artifactRoot.'
-}
-
-if ([string]::IsNullOrWhiteSpace($isoPrefix)) {
-    throw `
-        'Resolved update manifest is missing isoPrefix.'
-}
-
-# ============================================================
-# Patched image artifact paths
-# ============================================================
-
-$patchedBase =
-    "$artifactRoot/$normalizedArch/patched/$lcuBuild"
-
-$manifestArtifact =
-    "$patchedBase/manifest.json"
-
-$isoName =
-    "$isoPrefix-$normalizedArch-$lcuBuild-$kb.iso"
-
-$isoArtifact =
-    "$patchedBase/$isoName"
-
-$manifestUrl =
-    Get-ArtifactUrl $manifestArtifact
-
-Write-Host "Resolved LCU: $kb / $lcuBuild"
-Write-Host "UpdateID    : $($resolved.updateId)"
-Write-Host "MSU         : $($resolved.fileName)"
-Write-Host "Patched manifest: $manifestUrl"
-
-# ============================================================
-# Patched image cache validation
-# ============================================================
-
-$cacheHit = $false
-
-if ([string]::IsNullOrWhiteSpace($BaseIsoSha256)) {
-
-    Write-Warning `
-        'BASE_ISO_SHA256 is empty; exact patched-image cache validation is disabled.'
-}
-else {
-
-    $remoteManifest =
-        Get-ArtifactText $manifestArtifact
-
-    if ($remoteManifest) {
-
-        try {
-
-            # Remove UTF-8 BOM if present.
-            $remoteManifest =
-                $remoteManifest.TrimStart([char]0xFEFF)
-
-            $m =
-                $remoteManifest |
-                ConvertFrom-Json
-
-            $remoteBase =
-                ([string]$m.source.baseIsoSha256).ToLowerInvariant()
-
-            $remoteImageBuild =
-                [string]$m.image.windowsBuild
-
-            $remoteArch =
-                [string]$m.image.architecture
-
-            $remoteLcu =
-                $m.updates.lcu
-
-            $remoteKb =
-                ([string]$remoteLcu.kb).ToUpperInvariant()
-
-            $remoteBuild =
-                [string]$remoteLcu.build
-
-            $remoteUpdateId =
-                [string]$remoteLcu.updateId
-
-            $remoteFileName =
-                [string]$remoteLcu.fileName
-
-            $same =
-                ($remoteBase -eq $BaseIsoSha256.ToLowerInvariant()) -and
-                ($remoteImageBuild -eq $resolvedWindowsBuild) -and
-                ($remoteArch -ieq $normalizedArch) -and
-                ($remoteKb -eq $kb) -and
-                ($remoteBuild -eq $lcuBuild) -and
-                ($remoteUpdateId -eq [string]$resolved.updateId) -and
-                ($remoteFileName -eq [string]$resolved.fileName)
-
-            if (
-                $same -and
-                (Test-ArtifactExists $isoArtifact)
-            ) {
-
-                $cacheHit = $true
-
-                $markerObject = [ordered]@{
-                    cacheHit            = $true
-                    manifestArtifactPath = $manifestArtifact
-                    isoArtifactPath      = $isoArtifact
-                    kb                   = $kb
-                    build                = $lcuBuild
-                    updateId             = [string]$resolved.updateId
-                    isoFileName          = $isoName
+    switch ($ArtifactTransferMethod) {
+
+        'InvokeWebRequest' {
+
+            $uri = Get-ArtifactUrl $Path
+
+            try {
+                Invoke-WebRequest `
+                    -Uri $uri `
+                    -Headers $headers `
+                    -Method Head `
+                    -UseBasicParsing `
+                    -TimeoutSec 60 `
+                    -ErrorAction Stop |
+                    Out-Null
+
+                return $true
+            }
+            catch {
+                if (
+                    $_.Exception.Response -and
+                    [int]$_.Exception.Response.StatusCode -eq 404
+                ) {
+                    return $false
                 }
 
-                $markerJson =
-                    $markerObject |
-                    ConvertTo-Json -Depth 10
-
-                [System.IO.File]::WriteAllText(
-                    $CacheMarker,
-                    $markerJson,
-                    [System.Text.UTF8Encoding]::new($false)
-                )
-
-                Write-Host ''
-                Write-Host 'PATCHED IMAGE CACHE HIT'
-                Write-Host 'Base ISO download skipped.'
-                Write-Host 'MSU download skipped.'
-                Write-Host "Cached ISO: $isoArtifact"
-
-                exit 0
+                throw
             }
+        }
+
+        'JFrog' {
+
+            Assert-JFrogAvailable
+
+            $jfArtifact =
+                ConvertTo-JFrogArtifactPath $Path
+
+            $authArgs =
+                Get-JFrogAuthArguments
+
+            #
+            # Search for the exact artifact.
+            #
+            # Do not use "jf rt dl" as an existence test because that would
+            # actually download the artifact.
+            #
+            $jfArgs = @(
+                'rt'
+                's'
+                $jfArtifact
+                '--count'
+            )
+
+            $jfArgs += $authArgs
 
             Write-Host ''
-            Write-Host `
-                'Patched image manifest exists, but inputs do not match or ISO is missing. Cache miss.'
-        }
-        catch {
+            Write-Host "Checking JFrog artifact:"
+            Write-Host "  $jfArtifact"
 
-            Write-Warning `
-                "Could not parse remote patched manifest: $($_.Exception.Message)"
-        }
-    }
-    else {
+            #
+            # Capture output here because we need to inspect the result.
+            #
+            $output = & $JfPath @jfArgs 2>&1
 
-        Write-Host `
-            'Patched image manifest not found. Cache miss.'
-    }
-}
+            $exitCode = $LASTEXITCODE
 
-# ============================================================
-# Cache miss
-# ============================================================
+            if ($exitCode -ne 0) {
 
-Write-Host ''
-Write-Host '============================================================'
-Write-Host ' Download Base ISO and MSU (cache miss)'
-Write-Host '============================================================'
+                $text =
+                    ($output | Out-String).Trim()
 
-# ============================================================
-# Download base ISO
-# ============================================================
+                #
+                # A search failure is different from an artifact miss.
+                # Return false only for a clean no-result condition.
+                #
+                if (
+                    $text -match '(?i)no artifacts' -or
+                    $text -match '(?i)not found' -or
+                    $text -match '(?i)0 artifacts'
+                ) {
+                    return $false
+                }
 
-Download-Artifact `
-    -Path $BaseIsoArtifact `
-    -Destination $BaseIsoPath `
-    -ExpectedSha256 $BaseIsoSha256
+                throw (
+                    "jf.exe artifact search failed with exit code " +
+                    "$exitCode.`n$text"
+                )
+            }
 
-if (-not (Test-Path -LiteralPath $BaseIsoPath -PathType Leaf)) {
-    throw `
-        "Base ISO was not downloaded: $BaseIsoPath"
-}
+            $text =
+                ($output | Out-String).Trim()
 
-Write-Host ''
-Write-Host 'Base ISO download: SUCCESS'
-Write-Host "Base ISO: $BaseIsoPath"
+            #
+            # jf rt search --count normally returns a count.
+            #
+            $count = 0
 
-# ============================================================
-# Resolve and download/cache MSU
-#
-# IMPORTANT:
-# No ProfileScriptPath parameter here.
-# ============================================================
+            if ([int]::TryParse($text, [ref]$count)) {
+                return ($count -gt 0)
+            }
 
-& $ResolverScriptPath `
-    -WorkRoot $WorkRoot `
-    -Profile $Profile `
-    -Architecture $Architecture `
-    -ArtifactoryBaseUrl $ArtifactoryBaseUrl `
-    -ArtifactoryRepo $ArtifactoryRepo `
-    -ArtifactoryUser $ArtifactoryUser `
-    -ArtifactoryPassword $ArtifactoryPassword
+            #
+            # Some jf versions can return JSON/object-style output despite
+            # --count. Fall back to looking for a positive integer.
+            #
+            $match =
+                [regex]::Match(
+                    $text,
+                    '(?m)^\s*(\d+)\s*$'
+                )
 
-$resolveExit = $LASTEXITCODE
-
-if ($resolveExit -ne 0) {
-    throw `
-        "Update download/resolution failed with exit code ${resolveExit}"
-}
-
-if (-not (Test-Path -LiteralPath $ResolvedPath -PathType Leaf)) {
-    throw `
-        "Resolved update manifest was not created: $ResolvedPath"
-}
-
-# ============================================================
-# Read resolved update again
-# ============================================================
-
-$resolvedJson =
-    Get-Content `
-        -LiteralPath $ResolvedPath `
-        -Raw
-
-$resolvedJson =
-    $resolvedJson.TrimStart([char]0xFEFF)
-
-$resolved =
-    $resolvedJson |
-    ConvertFrom-Json
-
-if (
-    -not $resolved.kb -or
-    -not $resolved.build -or
-    -not $resolved.sha256
-) {
-    throw `
-        'Resolved update manifest is missing KB, build, or SHA256.'
-}
-
-# ============================================================
-# MSU path
-# ============================================================
-
-$package =
-    Join-Path `
-        $UpdatesDir `
-        $resolved.fileName
-
-if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
-    throw `
-        "Resolved update package is missing: $package"
-}
-
-# ============================================================
-# Validate MSU SHA256
-# ============================================================
-
-$actual =
-    Get-Sha256 $package
-
-$expected =
-    $resolved.sha256.ToString().ToLowerInvariant()
-
-if ($actual -ne $expected) {
-    throw `
-        "MSU SHA256 mismatch for $($resolved.fileName). " +
-        "Expected $expected, actual $actual"
-}
-
-# ============================================================
-# Success
-# ============================================================
-
-Write-Host ''
-Write-Host '============================================================'
-Write-Host ' Download Stage Complete'
-Write-Host '============================================================'
-Write-Host "Profile       : $($profileInfo.Name)"
-Write-Host "Windows       : $($profileInfo.WindowsVersion)"
-Write-Host "Windows Build : $($profileInfo.Build)"
-Write-Host "Architecture  : $Architecture"
-Write-Host "KB            : $($resolved.kb)"
-Write-Host "LCU Build     : $($resolved.build)"
-Write-Host "MSU           : $($resolved.fileName)"
-Write-Host "MSU SHA256    : $actual"
-Write-Host "MSU Source    : $($resolved.source)"
-Write-Host "MSU Path      : $package"
-Write-Host 'Download stage: SUCCESS'
-Write-Host '============================================================'
-Write-Host ''
-
-exit 0
+            if ($match.Success) {
+                return (
+                    [int]$match.Groups[1].Value -gt 0
+                )
+```
