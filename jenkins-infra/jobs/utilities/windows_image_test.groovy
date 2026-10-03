@@ -80,6 +80,12 @@ pipelineJob('utilities/windows-image-test') {
             true,
             'Keep workspace for troubleshooting.'
         )
+
+        choiceParam(
+            'ARTIFACT_TRANSFER_METHOD',
+            ['InvokeWebRequest', 'JFrog'],
+            'Artifactory transfer implementation'
+        )
     }
 
     definition {

@@ -6,6 +6,8 @@ def call(Map cfg = [:]) {
     def architecture = cfg.architecture ?: 'x64'
     def artifactoryBaseUrl = cfg.artifactoryBaseUrl
     def artifactoryRepo = cfg.artifactoryRepo ?: 'snapshot-generic-local'
+    def artifactTransferMethod =
+        cfg.artifactTransferMethod ?: 'InvokeWebRequest'
 
     if (!workRoot?.trim()) {
         error 'workRoot is required'
@@ -126,6 +128,7 @@ $ErrorActionPreference = 'Stop'
     -Architecture '__ARCHITECTURE__' `
     -ArtifactoryBaseUrl '__ARTIFACTORY_BASE_URL__' `
     -ArtifactoryRepo '__ARTIFACTORY_REPO__' `
+    -ArtifactTransferMethod '__ARTIFACT_TRANSFER_METHOD__' `
     -ArtifactoryUser $env:ARTIFACTORY_USER `
     -ArtifactoryPassword $env:ARTIFACTORY_PASSWORD `
     -ResolverScriptPath '__RESOLVER_SCRIPT_PATH__' `
@@ -166,6 +169,10 @@ if ($LASTEXITCODE -ne 0) {
             .replace(
                 '__ARTIFACTORY_REPO__',
                 artifactoryRepo
+            )
+            .replace(
+                '__ARTIFACT_TRANSFER_METHOD__',
+                artifactTransferMethod
             )
             .replace(
                 '__RESOLVER_SCRIPT_PATH__',

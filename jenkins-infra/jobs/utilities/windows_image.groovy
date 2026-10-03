@@ -11,6 +11,7 @@ pipelineJob('utilities/windows-image') {
         stringParam('IMAGE_INDEX','1','install.wim image index')
         stringParam('AGENT_LABEL','windows-image-builder','Jenkins agent label')
         booleanParam('KEEP_WORKSPACE',false,'Keep image workspace after the build')
+        choiceParam('ARTIFACT_TRANSFER_METHOD',['InvokeWebRequest', 'JFrog'],'Artifactory transfer implementation')
     }
     definition {
         cps {
@@ -26,7 +27,8 @@ windowsImagePipeline(
     artifactoryRepo: params.ARTIFACTORY_REPO,
     imageIndex: params.IMAGE_INDEX,
     agentLabel: params.AGENT_LABEL,
-    keepWorkspace: params.KEEP_WORKSPACE
+    keepWorkspace: params.KEEP_WORKSPACE,
+    artifactTransferMethod: params.ARTIFACT_TRANSFER_METHOD
 )
 '''.stripIndent())
             sandbox()
