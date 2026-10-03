@@ -128,6 +128,7 @@ Artifactory:
                     architecture: architecture,
                     artifactoryBaseUrl: artifactoryBaseUrl,
                     artifactoryRepo: artifactoryRepo
+                    artifactTransferMethod: params.ARTIFACT_TRANSFER_METHOD
                 )
             }
 
