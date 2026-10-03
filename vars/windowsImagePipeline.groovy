@@ -127,7 +127,7 @@ Artifactory:
                     profile: profile,
                     architecture: architecture,
                     artifactoryBaseUrl: artifactoryBaseUrl,
-                    artifactoryRepo: artifactoryRepo
+                    artifactoryRepo: artifactoryRepo,
                     artifactTransferMethod: params.ARTIFACT_TRANSFER_METHOD
                 )
             }
