@@ -274,9 +274,8 @@ function Get-CatalogRows {
     ) {
         $row = $match.Groups[1].Value
 
-        $text = [Net.WebUtility]::HtmlDecode(
-            $row -replace '<[^>]+>', ' '
-        )
+        $plainRow = $row -replace '<[^>]+>', ' '
+        $text = [Net.WebUtility]::HtmlDecode([string]$plainRow)
 
         $text = $text -replace '\s+', ' '
         $text = $text.Trim()
