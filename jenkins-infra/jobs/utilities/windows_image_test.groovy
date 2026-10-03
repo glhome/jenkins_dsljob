@@ -50,7 +50,7 @@ pipelineJob('utilities/windows-image-test') {
 
         stringParam(
             'ARTIFACTORY_BASE_URL',
-            '',
+            'http://localhost:8082/',
             'Artifactory server URL.'
         )
 
