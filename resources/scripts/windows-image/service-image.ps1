@@ -223,7 +223,7 @@ Actual:
     }
 
     Write-Host ''
-    Write-Host "Verified $Label:"
+    Write-Host "Verified ${Label}:"
     Write-Host "  KB     : $($Package.kb)"
     Write-Host "  File   : $($Package.fileName)"
     Write-Host "  SHA256 : $actual"
