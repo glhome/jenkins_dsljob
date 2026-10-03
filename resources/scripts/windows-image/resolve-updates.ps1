@@ -952,6 +952,134 @@ function Get-LcuBuildFromMsu {
     throw "Unsupported Windows image profile: $Profile"
 }
 
+function Get-OfflineServicingRequirement {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WindowsBuild,
+
+        [Parameter(Mandatory = $true)]
+        [string]$LcuBuild
+    )
+
+    if ($WindowsBuild -match '^26100') {
+
+        return [pscustomobject]@{
+            standaloneSsuRequired = $false
+            ssuKb                 = $null
+            ssuBuild              = $null
+            reason                = 'Windows 11 24H2 combined SSU+LCU.'
+        }
+    }
+
+    if ($WindowsBuild -match '^19044|^19045') {
+
+        # ----------------------------------------------------
+        # Windows 10 21H2/22H2:
+        #
+        # Current monthly LCUs contain the SSU.
+        #
+        # However, older offline media may require the
+        # special standalone SSU KB5031539.
+        #
+        # The actual decision will be made by
+        # windowsImagePrepare.ps1 after inspecting the image.
+        # ----------------------------------------------------
+
+        return [pscustomobject]@{
+            standaloneSsuRequired = 'IMAGE_BASELINE_CHECK'
+            ssuKb                 = 'KB5031539'
+            ssuBuild              = '19041.3562'
+            reason                = 'Windows 10 offline image must be checked for KB5028244-or-later baseline.'
+        }
+    }
+
+    throw "Unsupported Windows build family: $WindowsBuild"
+}
+# ============================================================
+# Servicing metadata
+# ============================================================
+
+function Get-BuildNumber {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Build
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Build)) {
+        return [int64]0
+    }
+
+    $match = [regex]::Match(
+        $Build,
+        '^\d+\.(\d+)$'
+    )
+
+    if (-not $match.Success) {
+        return [int64]0
+    }
+
+    return [int64]$match.Groups[1].Value
+}
+
+function Get-ServicingPlan {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WindowsBuild,
+
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$SelectedLcu
+    )
+
+    $buildFamily = $WindowsBuild.Trim()
+
+    # --------------------------------------------------------
+    # Windows 11 24H2
+    #
+    # Current Windows 11 24H2 monthly LCUs use the combined
+    # SSU+LCU servicing model.
+    # --------------------------------------------------------
+
+    if ($buildFamily -match '^26100') {
+
+        return [pscustomobject]@{
+            lcuContainsSsu       = $true
+            standaloneSsuRequired = $false
+            ssuKb                 = $null
+            ssuUpdateId           = $null
+            reason                = 'Windows 11 24H2 LCU uses combined SSU+LCU servicing.'
+        }
+    }
+
+    # --------------------------------------------------------
+    # Windows 10 21H2 / 22H2
+    #
+    # Current LCUs are combined SSU+LCU, but old offline media
+    # can require a standalone prerequisite SSU.
+    #
+    # KB5129236 specifically documents:
+    #
+    #   media with KB5028244 or later -> no standalone SSU
+    #
+    #   older media -> KB5031539 first
+    #
+    # Do NOT hard-code this into the LCU selection itself.
+    # The prerequisite belongs to the image state.
+    # --------------------------------------------------------
+
+    if ($buildFamily -match '^19044|^19045') {
+
+        return [pscustomobject]@{
+            lcuContainsSsu       = $true
+            standaloneSsuRequired = $false
+            ssuKb                 = $null
+            ssuUpdateId           = $null
+            reason                = 'Windows 10 LCU contains the current SSU; standalone SSU depends on offline image baseline.'
+        }
+    }
+
+    throw "Unsupported Windows build family for servicing plan: $WindowsBuild"
+}
+
 # ---------------------------------------------------------------------------
 # Resolve latest LCU
 # ---------------------------------------------------------------------------
