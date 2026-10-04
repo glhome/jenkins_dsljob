@@ -205,124 +205,94 @@ function Get-ArtifactoryUrl {
 # ---------------------------------------------------------------------------
 
 function Test-ArtifactoryFile {
-
     param(
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory)]
         [string]$RelativePath
     )
 
-    $jfArtifact = ConvertTo-JFrogArtifactPath $RelativePath
+    $artifact = "$ArtifactoryRepo/$($RelativePath.TrimStart('/'))"
 
-    $stdoutFile = Join-Path `
-        $env:TEMP `
-        ("jf-search-" + [guid]::NewGuid().ToString('N') + '.out')
+    Write-Host "------------------------------------------------------------"
+    Write-Host "Checking Artifactory artifact:"
+    Write-Host "  $artifact"
 
-    $stderrFile = Join-Path `
-        $env:TEMP `
-        ("jf-search-" + [guid]::NewGuid().ToString('N') + '.err')
+    $stdoutFile = Join-Path $DownloadDir "jf-search.stdout"
+    $stderrFile = Join-Path $DownloadDir "jf-search.stderr"
 
-    try {
+    Remove-Item -LiteralPath $stdoutFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue
 
-        $authArgs = Get-JFrogAuthArguments
+    $args = @(
+        'rt'
+        'search'
+        $artifact
+        '--count'
+    )
 
-        $args = @(
-            'rt'
-            'search'
-            $jfArtifact
-            '--count'
-            '--url'
-            $ArtifactoryRoot
-        ) + $authArgs
-
-        $quotedArgs = foreach ($arg in $args) {
-
-            if ($arg -match '[\s"]') {
-                '"' + ($arg -replace '"', '\"') + '"'
-            }
-            else {
-                $arg
-            }
-        }
-
-        $commandLine =
-            '"' + $JfPath + '" ' +
-            ($quotedArgs -join ' ') +
-            ' > "' + $stdoutFile + '"' +
-            ' 2> "' + $stderrFile + '"'
-
-        Write-Host "Checking Artifactory artifact:"
-        Write-Host "  $jfArtifact"
-
-        $process = Start-Process `
-            -FilePath 'cmd.exe' `
-            -ArgumentList '/c', $commandLine `
-            -Wait `
-            -PassThru `
-            -WindowStyle Hidden
-
-        $stdout = ''
-
-        if (Test-Path -LiteralPath $stdoutFile) {
-            $stdout = Get-Content `
-                -LiteralPath $stdoutFile `
-                -Raw `
-                -ErrorAction SilentlyContinue
-        }
-
-        $stderr = ''
-
-        if (Test-Path -LiteralPath $stderrFile) {
-            $stderr = Get-Content `
-                -LiteralPath $stderrFile `
-                -Raw `
-                -ErrorAction SilentlyContinue
-        }
-
-        if ($process.ExitCode -ne 0) {
-
-            if (
-                $stderr -match '(?i)no artifacts found|no artifacts|not found'
-            ) {
-                return $false
-            }
-
-            Write-Host "JFrog search returned exit code $($process.ExitCode)."
-            if (-not [string]::IsNullOrWhiteSpace($stderr)) {
-                Write-Host $stderr.Trim()
-            }
-
-            return $false
-        }
-
-        $count = 0
-
-        if (
-            [int]::TryParse(
-                $stdout.Trim(),
-                [Globalization.NumberStyles]::Integer,
-                [Globalization.CultureInfo]::InvariantCulture,
-                [ref]$count
-            )
-        ) {
-            return ($count -gt 0)
-        }
-
-        return (
-            $stdout.Trim() -match '^[1-9][0-9]*$'
-        )
+    # Use the configured Artifactory server/authentication.
+    if ($ArtifactoryToken) {
+        $args += "--url=$ArtifactoryBaseUrl"
+        $args += "--access-token=$ArtifactoryToken"
     }
-    finally {
-
-        Remove-Item `
-            -LiteralPath $stdoutFile `
-            -Force `
-            -ErrorAction SilentlyContinue
-
-        Remove-Item `
-            -LiteralPath $stderrFile `
-            -Force `
-            -ErrorAction SilentlyContinue
+    elseif ($ArtifactoryUser -and $ArtifactoryPassword) {
+        $args += "--url=$ArtifactoryBaseUrl"
+        $args += "--user=$ArtifactoryUser"
+        $args += "--password=$ArtifactoryPassword"
     }
+    else {
+        $args += "--url=$ArtifactoryBaseUrl"
+    }
+
+    $process = Start-Process `
+        -FilePath $JfPath `
+        -ArgumentList $args `
+        -Wait `
+        -PassThru `
+        -NoNewWindow `
+        -RedirectStandardOutput $stdoutFile `
+        -RedirectStandardError $stderrFile
+
+    $stdout = ''
+    $stderr = ''
+
+    if (Test-Path -LiteralPath $stdoutFile) {
+        $stdout = Get-Content -LiteralPath $stdoutFile -Raw
+    }
+
+    if (Test-Path -LiteralPath $stderrFile) {
+        $stderr = Get-Content -LiteralPath $stderrFile -Raw
+    }
+
+    Write-Host "JFrog search exit code: $($process.ExitCode)"
+
+    if ($stdout.Trim()) {
+        Write-Host "JFrog search output:"
+        Write-Host $stdout.Trim()
+    }
+
+    if ($stderr.Trim()) {
+        Write-Host "JFrog search messages:"
+        Write-Host $stderr.Trim()
+    }
+
+    if ($process.ExitCode -ne 0) {
+        Write-Host "ARTIFACTORY CACHE MISS"
+        return $false
+    }
+
+    $count = 0
+
+    if ($stdout.Trim() -match '(\d+)\s*$') {
+        $count = [int]$Matches[1]
+    }
+
+    if ($count -gt 0) {
+        Write-Host "ARTIFACTORY CACHE HIT"
+        return $true
+    }
+
+    Write-Host "ARTIFACTORY CACHE MISS"
+    return $false
 }
 
 # ---------------------------------------------------------------------------
