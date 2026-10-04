@@ -898,18 +898,32 @@ if (Test-Path -LiteralPath $CacheMarker) {
     Remove-Item -LiteralPath $CacheMarker -Force
 }
 
-& $ResolverScriptPath `
-    -WorkRoot $WorkRoot `
-    -Profile $Profile `
-    -Architecture $Architecture `
-    -ArtifactoryBaseUrl $ArtifactoryBaseUrl `
-    -ArtifactoryRepo $ArtifactoryRepo `
-    -ArtifactoryUser $ArtifactoryUser `
-    -ArtifactoryPassword $ArtifactoryPassword `
-    -ArtifactoryToken $ArtifactoryToken `
-    -ResolveOnly
+try {
+    & $ResolverScriptPath `
+        -WorkRoot $WorkRoot `
+        -WindowsProfile $Profile `
+        -Architecture $Architecture `
+        -ArtifactoryBaseUrl $ArtifactoryBaseUrl `
+        -ArtifactoryRepo $ArtifactoryRepo `
+        -ArtifactoryUser $ArtifactoryUser `
+        -ArtifactoryPassword $ArtifactoryPassword `
+        -ArtifactoryToken $ArtifactoryToken `
+        -ResolveOnly
 
-$resolveExit = $LASTEXITCODE
+    if (-not $?) {
+        throw "Windows update resolver reported failure."
+    }
+
+    $resolveExit = 0
+}
+catch {
+    $resolveExit = 1
+    Write-Error "Windows update resolver failed: $($_.Exception.Message)"
+}
+
+if ($resolveExit -ne 0) {
+    throw "Windows update resolution failed with exit code $resolveExit."
+}
 
 if ($resolveExit -ne 0) {
     throw "Update resolver failed with exit code $resolveExit"
