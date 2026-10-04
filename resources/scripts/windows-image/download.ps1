@@ -340,13 +340,32 @@ function Get-ArtifactText {
 
         'JFrog' {
 
+            if (-not (Test-ArtifactExists -Path $Path)) {
+                Write-Host "JFrog artifact does not exist: $Path"
+                return $null
+            }
+
             $tempDir = Join-Path $DownloadDir '.jfrog-text'
 
-            New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+            if (Test-Path -LiteralPath $tempDir) {
+                Remove-Item `
+                    -LiteralPath $tempDir `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+            }
 
-            $downloadedFile = Join-Path $tempDir (Split-Path $Path -Leaf)
+            New-Item `
+                -ItemType Directory `
+                -Force `
+                -Path $tempDir |
+                Out-Null
+
+            $fileName = Split-Path $Path -Leaf
+            $downloadedFile = Join-Path $tempDir $fileName
 
             try {
+
                 $jfArtifact = ConvertTo-JFrogArtifactPath -Path $Path
 
                 $jfArgs = @(
@@ -355,13 +374,12 @@ function Get-ArtifactText {
                     $jfArtifact
                     $tempDir
                     '--flat=true'
-                    '--fail-no-op=true'
                 )
 
                 Invoke-JFrog -Arguments $jfArgs | Out-Null
 
                 if (-not (Test-Path -LiteralPath $downloadedFile -PathType Leaf)) {
-                    return $null
+                    throw "JFrog download succeeded but artifact was not found: $downloadedFile"
                 }
 
                 $bytes = [IO.File]::ReadAllBytes($downloadedFile)
@@ -385,19 +403,12 @@ function Get-ArtifactText {
                     $bytes.Length - $offset
                 )
             }
-            catch {
-                if (
-                    $_.Exception.Message -match '(?i)404|not found|no artifacts|no files'
-                ) {
-                    return $null
-                }
-
-                throw
-            }
             finally {
-                if (Test-Path -LiteralPath $downloadedFile) {
+
+                if (Test-Path -LiteralPath $tempDir) {
                     Remove-Item `
-                        -LiteralPath $downloadedFile `
+                        -LiteralPath $tempDir `
+                        -Recurse `
                         -Force `
                         -ErrorAction SilentlyContinue
                 }
