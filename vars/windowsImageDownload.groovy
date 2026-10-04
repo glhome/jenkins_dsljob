@@ -15,7 +15,7 @@ def call(Map cfg = [:]) {
         cfg.jfPath ?: 'jf.exe'
 
     def artifactoryToken =
-        cfg.artifactoryToken ?: 'cmVmdGtuOjAxOjE4MjI0NTIwMTE6RnJLRWhHTHdnR01xdzRadU9hSVpVUkJjaEE4'
+        cfg.artifactoryToken ?: ''
 
     if (!workRoot?.trim()) {
         error 'workRoot is required'
