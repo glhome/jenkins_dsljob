@@ -1092,7 +1092,7 @@ function Resolve-PackageFile {
     $sha256 = Get-Sha256 -Path $localPath
 
     Write-Host ''
-    Write-Host "Resolved $PackageType:"
+    Write-Host "Resolved ${PackageType}:"
     Write-Host "  KB:       $($Package.KB)"
     Write-Host "  File:     $($Package.FileName)"
     Write-Host "  SHA256:   $sha256"
