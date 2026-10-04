@@ -664,6 +664,7 @@ function Test-ArtifactExists {
 # Download artifact
 # ============================================================
 
+
 function Download-Artifact {
     param(
         [Parameter(Mandatory = $true)]
@@ -679,7 +680,11 @@ function Download-Artifact {
 
     $dir = Split-Path -Parent $Destination
 
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    New-Item `
+        -ItemType Directory `
+        -Force `
+        -Path $dir |
+        Out-Null
 
     Write-Host ""
     Write-Host "Downloading Artifactory artifact:"
@@ -690,6 +695,9 @@ function Download-Artifact {
     Write-Host "  Destination:"
     Write-Host "    $Destination"
 
+    #
+    # Always download to a temporary FILE.
+    #
     $temporary = "$Destination.download"
 
     if (Test-Path -LiteralPath $temporary) {
@@ -706,6 +714,7 @@ function Download-Artifact {
             'InvokeWebRequest' {
 
                 try {
+
                     Invoke-WebRequest `
                         -Uri $uri `
                         -Headers $headers `
@@ -716,6 +725,7 @@ function Download-Artifact {
                         -ErrorAction Stop
                 }
                 catch {
+
                     throw "Artifactory download failed: $uri`n$($_.Exception.Message)"
                 }
             }
@@ -726,32 +736,39 @@ function Download-Artifact {
 
                 $jfArtifact = ConvertTo-JFrogArtifactPath -Path $Path
 
-                $tempDir = Split-Path -Parent $temporary
-
+                #
+                # IMPORTANT:
+                #
+                # Pass the exact temporary FILE as the JFrog target.
+                #
+                # Do not pass:
+                #
+                #   $dir
+                #
+                # because jf.exe may attempt directory cleanup.
+                #
                 $jfArgs = @(
                     'rt'
                     'dl'
                     $jfArtifact
-                    $tempDir
+                    $temporary
                     '--flat=true'
-                    '--fail-no-op=true'
                     '--threads=4'
                 )
 
-                Invoke-JFrog -Arguments $jfArgs | Out-Null
+                Invoke-JFrog `
+                    -Arguments $jfArgs |
+                    Out-Null
 
-                $jfDownloaded = Join-Path `
-                    $tempDir `
-                    (Split-Path $Path -Leaf)
-
-                if (-not (Test-Path -LiteralPath $jfDownloaded -PathType Leaf)) {
-                    throw "JFrog reported successful download, but the downloaded file was not found: $jfDownloaded"
+                if (
+                    -not (
+                        Test-Path `
+                            -LiteralPath $temporary `
+                            -PathType Leaf
+                    )
+                ) {
+                    throw "JFrog reported successful download, but the downloaded file was not found: $temporary"
                 }
-
-                Move-Item `
-                    -LiteralPath $jfDownloaded `
-                    -Destination $temporary `
-                    -Force
             }
 
             default {
@@ -759,7 +776,16 @@ function Download-Artifact {
             }
         }
 
-        if (-not (Test-Path -LiteralPath $temporary -PathType Leaf)) {
+        #
+        # Validate downloaded file.
+        #
+        if (
+            -not (
+                Test-Path `
+                    -LiteralPath $temporary `
+                    -PathType Leaf
+            )
+        ) {
             throw "Artifact transfer completed but temporary file was not created: $temporary"
         }
 
@@ -769,31 +795,49 @@ function Download-Artifact {
             throw "Artifact transfer produced an empty file: $temporary"
         }
 
+        Write-Host ""
+        Write-Host "Downloaded file size: $($temporaryInfo.Length) bytes"
+
+        #
+        # SHA256 verification.
+        #
         if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256)) {
+
+            Write-Host "Calculating SHA256..."
 
             $actual = Get-Sha256 -Path $temporary
 
-            if ($actual -ne $ExpectedSha256.ToLowerInvariant()) {
+            $expected = $ExpectedSha256.ToLowerInvariant()
+
+            if ($actual -ne $expected) {
 
                 Remove-Item `
                     -LiteralPath $temporary `
                     -Force `
                     -ErrorAction SilentlyContinue
 
-                throw "SHA256 mismatch for $Path. Expected $ExpectedSha256, actual $actual"
+                throw "SHA256 mismatch for $Path. Expected $expected, actual $actual"
             }
 
             Write-Host "SHA256 verified: $actual"
         }
 
+        #
+        # Replace destination atomically-ish.
+        #
         if (Test-Path -LiteralPath $Destination) {
-            Remove-Item -LiteralPath $Destination -Force
+
+            Remove-Item `
+                -LiteralPath $Destination `
+                -Force `
+                -ErrorAction Stop
         }
 
         Move-Item `
             -LiteralPath $temporary `
             -Destination $Destination `
-            -Force
+            -Force `
+            -ErrorAction Stop
 
         Write-Host ""
         Write-Host "Artifact download: SUCCESS"
@@ -802,6 +846,7 @@ function Download-Artifact {
     catch {
 
         if (Test-Path -LiteralPath $temporary) {
+
             Remove-Item `
                 -LiteralPath $temporary `
                 -Force `
@@ -811,6 +856,7 @@ function Download-Artifact {
         throw
     }
 }
+
 
 # ============================================================
 # Display configuration
