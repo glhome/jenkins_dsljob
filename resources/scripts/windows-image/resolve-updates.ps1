@@ -1,14 +1,15 @@
-
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$WorkRoot,
 
+    [Parameter(Mandatory = $false)]
+    [Alias('Profile')]
     [ValidateSet(
         'windows11-24h2',
         'windows10-21h2'
     )]
-    [string]$Profile = 'windows11-24h2',
+    [string]$WindowsProfile = 'windows11-24h2',
 
     [ValidateSet(
         'x64',
@@ -33,6 +34,7 @@ param(
 
     [switch]$ResolveOnly
 )
+
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -59,7 +61,7 @@ Write-Host '============================================================'
 Write-Host ' Windows Image Update Resolver'
 Write-Host '============================================================'
 Write-Host "WorkRoot:            $WorkRoot"
-Write-Host "Profile:             $Profile"
+Write-Host "Profile:             $WindowsProfile"
 Write-Host "Architecture:        $Architecture"
 Write-Host "Artifactory Repo:    $ArtifactoryRepo"
 Write-Host "Force MS Download:   $ForceMicrosoftDownload"
@@ -84,7 +86,7 @@ if (-not (Get-Command Get-WindowsImageProfile -ErrorAction SilentlyContinue)) {
     throw "Get-WindowsImageProfile was not found after loading '$profilesPath'."
 }
 
-$imageProfile = Get-WindowsImageProfile -Profile $Profile
+$imageProfile = Get-WindowsImageProfile -Profile $WindowsProfile
 
 if ($null -eq $imageProfile) {
     throw "Windows image profile '$Profile' was not found."
@@ -128,7 +130,7 @@ if ([string]::IsNullOrWhiteSpace($Product)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($Release)) {
-    throw "Profile '$Profile' does not define Release."
+    throw "Profile '$WindowsProfile' does not define Release."
 }
 
 $CatalogQuery = [string](Get-ProfileProperty `
@@ -1835,7 +1837,7 @@ $resolvedSsu = $null
 # Windows 11 24H2
 # -----------------------------------------------------------------------------
 
-if ($Profile -eq 'windows11-24h2') {
+if ($WindowsProfile -eq 'windows11-24h2') {
 
     if ([string]::IsNullOrWhiteSpace($CatalogQuery)) {
         $CatalogQuery = 'Windows 11 24H2 cumulative update x64'
@@ -1971,7 +1973,7 @@ UpdateID:            $($resolvedLcu.UpdateId)
 # Windows 10 21H2
 # -----------------------------------------------------------------------------
 
-elseif ($Profile -eq 'windows10-21h2') {
+elseif ($WindowsProfile -eq 'windows10-21h2') {
 
     Write-Host ''
     Write-Host '============================================================'
@@ -2130,7 +2132,7 @@ elseif ($Profile -eq 'windows10-21h2') {
     $manifest = [ordered]@{
         schemaVersion = '1.4'
 
-        profile       = $Profile
+        profile       = $WindowsProfile
         product       = $Product
         release       = $Release
         architecture = $Architecture
