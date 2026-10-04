@@ -425,6 +425,7 @@ function Get-ArtifactText {
 # Test artifact exists
 # ============================================================
 
+
 function Test-ArtifactExists {
     param(
         [Parameter(Mandatory = $true)]
@@ -450,6 +451,7 @@ function Test-ArtifactExists {
                 return $true
             }
             catch {
+
                 if (
                     $_.Exception.Response -and
                     [int]$_.Exception.Response.StatusCode -eq 404
@@ -467,59 +469,184 @@ function Test-ArtifactExists {
 
             $jfArtifact = ConvertTo-JFrogArtifactPath -Path $Path
 
-            $jfArgs = @(
+            $fullArgs = @(
                 'rt'
                 's'
                 $jfArtifact
                 '--count'
-            )
-
-            $urlArgs = @(
                 '--url'
                 $ArtifactoryUrlRoot
-            )
+            ) + (Get-JFrogAuthArguments)
 
-            $authArgs = Get-JFrogAuthArguments
-
-            $fullArgs = @($jfArgs) + $urlArgs + $authArgs
-
-            $safeArgs = Protect-JFrogArguments -Arguments $fullArgs
+            $safeArgs = Protect-JFrogArguments `
+                -Arguments $fullArgs
 
             Write-Host ""
             Write-Host "Checking JFrog artifact:"
             Write-Host "  $($safeArgs -join ' ')"
 
-            $output = & $JfPath @fullArgs 2>&1
+            #
+            # IMPORTANT:
+            #
+            # Do not use:
+            #
+            #   2>&1
+            #
+            # JFrog writes informational messages such as
+            # "Searching artifacts..." to stderr.
+            #
+            # Capture stdout and stderr independently.
+            #
+
+            $stdoutFile = Join-Path `
+                $DownloadDir `
+                '.jfrog-search.stdout'
+
+            $stderrFile = Join-Path `
+                $DownloadDir `
+                '.jfrog-search.stderr'
+
+            Remove-Item `
+                -LiteralPath $stdoutFile `
+                -Force `
+                -ErrorAction SilentlyContinue
+
+            Remove-Item `
+                -LiteralPath $stderrFile `
+                -Force `
+                -ErrorAction SilentlyContinue
+
+            #
+            # Execute jf.exe through cmd.exe so that stderr does
+            # not become a PowerShell NativeCommandError.
+            #
+            $argumentString = @(
+                $fullArgs | ForEach-Object {
+                    $value = [string]$_
+
+                    if (
+                        $value -match '[\s"]'
+                    ) {
+                        '"' + $value.Replace('"', '\"') + '"'
+                    }
+                    else {
+                        $value
+                    }
+                }
+            ) -join ' '
+
+            $cmdLine = "`"$JfPath`" $argumentString 1>`"$stdoutFile`" 2>`"$stderrFile`""
+
+            cmd.exe /d /s /c $cmdLine
+
             $exitCode = $LASTEXITCODE
 
-            $text = ($output | Out-String).Trim()
+            $stdout = ''
 
+            if (Test-Path -LiteralPath $stdoutFile) {
+                $stdout = Get-Content `
+                    -LiteralPath $stdoutFile `
+                    -Raw `
+                    -ErrorAction SilentlyContinue
+            }
+
+            $stderr = ''
+
+            if (Test-Path -LiteralPath $stderrFile) {
+                $stderr = Get-Content `
+                    -LiteralPath $stderrFile `
+                    -Raw `
+                    -ErrorAction SilentlyContinue
+            }
+
+            Remove-Item `
+                -LiteralPath $stdoutFile `
+                -Force `
+                -ErrorAction SilentlyContinue
+
+            Remove-Item `
+                -LiteralPath $stderrFile `
+                -Force `
+                -ErrorAction SilentlyContinue
+
+            #
+            # Exit code 2 can mean "no files affected" for some
+            # JFrog operations. Treat that as a cache miss.
+            #
             if ($exitCode -ne 0) {
+
+                $combined = "$stdout`n$stderr"
+
                 if (
-                    $text -match '(?i)no artifacts' -or
-                    $text -match '(?i)not found' -or
-                    $text -match '(?i)0 artifacts' -or
-                    $text -match '(?i)no files'
+                    $combined -match '(?i)no artifacts' -or
+                    $combined -match '(?i)no files' -or
+                    $combined -match '(?i)not found' -or
+                    $combined -match '(?i)0 artifacts'
                 ) {
+                    Write-Host "JFrog artifact does not exist: $Path"
                     return $false
                 }
 
-                throw "jf.exe artifact search failed with exit code $exitCode.`n$text"
+                throw "jf.exe artifact search failed with exit code $exitCode.`n$combined"
             }
+
+            #
+            # jf rt s --count normally returns a numeric value.
+            #
+            $countText = $stdout.Trim()
 
             $count = 0
 
-            if ([int]::TryParse($text, [ref]$count)) {
-                return ($count -gt 0)
+            if (
+                [int]::TryParse(
+                    $countText,
+                    [Globalization.NumberStyles]::Integer,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [ref]$count
+                )
+            ) {
+                if ($count -gt 0) {
+                    Write-Host "JFrog artifact exists: $Path"
+                    return $true
+                }
+
+                Write-Host "JFrog artifact does not exist: $Path"
+                return $false
             }
 
+            #
+            # Some JFrog CLI versions may put the count in a
+            # slightly different output format.
+            #
             $match = [regex]::Match(
-                $text,
+                $countText,
                 '(?m)^\s*(\d+)\s*$'
             )
 
             if ($match.Success) {
-                return ([int]$match.Groups[1].Value -gt 0)
+
+                $count = [int]$match.Groups[1].Value
+
+                if ($count -gt 0) {
+                    Write-Host "JFrog artifact exists: $Path"
+                    return $true
+                }
+
+                Write-Host "JFrog artifact does not exist: $Path"
+                return $false
+            }
+
+            #
+            # If there was no numeric output, don't assume the
+            # artifact exists. Treat it as a cache miss.
+            #
+            Write-Host "JFrog returned no usable artifact count."
+            Write-Host "JFrog stdout:"
+            Write-Host $countText
+
+            if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+                Write-Host "JFrog stderr:"
+                Write-Host $stderr.Trim()
             }
 
             return $false
@@ -530,6 +657,8 @@ function Test-ArtifactExists {
         }
     }
 }
+
+
 
 # ============================================================
 # Download artifact
