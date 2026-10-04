@@ -205,47 +205,47 @@ function Get-ArtifactoryUrl {
 # ---------------------------------------------------------------------------
 
 function Test-ArtifactoryFile {
+
     param(
-        [Parameter(Mandatory)]
+        [Parameter(Mandatory = $true)]
         [string]$RelativePath
     )
 
     $artifact = "$ArtifactoryRepo/$($RelativePath.TrimStart('/'))"
 
-    Write-Host "------------------------------------------------------------"
-    Write-Host "Checking Artifactory artifact:"
+    Write-Host '------------------------------------------------------------'
+    Write-Host 'Checking Artifactory artifact:'
     Write-Host "  $artifact"
 
-    $stdoutFile = Join-Path $DownloadDir "jf-search.stdout"
-    $stderrFile = Join-Path $DownloadDir "jf-search.stderr"
+    $stdoutFile = Join-Path $DownloadDir 'jf-search.stdout'
+    $stderrFile = Join-Path $DownloadDir 'jf-search.stderr'
 
-    Remove-Item -LiteralPath $stdoutFile -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue
+    Remove-Item `
+        -LiteralPath $stdoutFile `
+        -Force `
+        -ErrorAction SilentlyContinue
 
-    $args = @(
+    Remove-Item `
+        -LiteralPath $stderrFile `
+        -Force `
+        -ErrorAction SilentlyContinue
+
+    # Use the JFrog CLI configuration already installed on the Jenkins
+    # node. This is intentionally the same command that was manually
+    # verified to work:
+    #
+    #   jf.exe rt search <artifact> --count
+    #
+    $arguments = @(
         'rt'
         'search'
         $artifact
         '--count'
     )
 
-    # Use the configured Artifactory server/authentication.
-    if ($ArtifactoryToken) {
-        $args += "--url=$ArtifactoryBaseUrl"
-        $args += "--access-token=$ArtifactoryToken"
-    }
-    elseif ($ArtifactoryUser -and $ArtifactoryPassword) {
-        $args += "--url=$ArtifactoryBaseUrl"
-        $args += "--user=$ArtifactoryUser"
-        $args += "--password=$ArtifactoryPassword"
-    }
-    else {
-        $args += "--url=$ArtifactoryBaseUrl"
-    }
-
     $process = Start-Process `
         -FilePath $JfPath `
-        -ArgumentList $args `
+        -ArgumentList $arguments `
         -Wait `
         -PassThru `
         -NoNewWindow `
@@ -255,43 +255,59 @@ function Test-ArtifactoryFile {
     $stdout = ''
     $stderr = ''
 
-    if (Test-Path -LiteralPath $stdoutFile) {
-        $stdout = Get-Content -LiteralPath $stdoutFile -Raw
+    if (Test-Path -LiteralPath $stdoutFile -PathType Leaf) {
+        $stdout = Get-Content `
+            -LiteralPath $stdoutFile `
+            -Raw `
+            -ErrorAction SilentlyContinue
+
+        if ($null -eq $stdout) {
+            $stdout = ''
+        }
     }
 
-    if (Test-Path -LiteralPath $stderrFile) {
-        $stderr = Get-Content -LiteralPath $stderrFile -Raw
+    if (Test-Path -LiteralPath $stderrFile -PathType Leaf) {
+        $stderr = Get-Content `
+            -LiteralPath $stderrFile `
+            -Raw `
+            -ErrorAction SilentlyContinue
+
+        if ($null -eq $stderr) {
+            $stderr = ''
+        }
     }
 
     Write-Host "JFrog search exit code: $($process.ExitCode)"
 
-    if ($stdout.Trim()) {
-        Write-Host "JFrog search output:"
-        Write-Host $stdout.Trim()
-    }
-
-    if ($stderr.Trim()) {
-        Write-Host "JFrog search messages:"
+    if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+        Write-Host 'JFrog search messages:'
         Write-Host $stderr.Trim()
     }
 
     if ($process.ExitCode -ne 0) {
-        Write-Host "ARTIFACTORY CACHE MISS"
+        Write-Host 'ARTIFACTORY CACHE MISS'
         return $false
     }
 
     $count = 0
 
-    if ($stdout.Trim() -match '(\d+)\s*$') {
-        $count = [int]$Matches[1]
+    $countMatch = [regex]::Match(
+        [string]$stdout,
+        '(?m)^\s*(\d+)\s*$'
+    )
+
+    if ($countMatch.Success) {
+        $count = [int]$countMatch.Groups[1].Value
     }
 
+    Write-Host "JFrog artifact count: $count"
+
     if ($count -gt 0) {
-        Write-Host "ARTIFACTORY CACHE HIT"
+        Write-Host 'ARTIFACTORY CACHE HIT'
         return $true
     }
 
-    Write-Host "ARTIFACTORY CACHE MISS"
+    Write-Host 'ARTIFACTORY CACHE MISS'
     return $false
 }
 
@@ -670,27 +686,52 @@ function Get-CatalogRows {
             }
         }
 
-        # IMPORTANT:
-        # UpdateID is extracted from THIS SAME Catalog row.
-        $updateIds = @(
-            [regex]::Matches(
-                $row,
-                '(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
-            ) |
-            ForEach-Object Value |
-            Select-Object -Unique
+        # ---------------------------------------------------------------
+        # IMPORTANT
+        #
+        # Extract the UpdateID associated with this Catalog result.
+        #
+        # Do NOT collect every GUID in the <tr>. A Catalog row can contain
+        # unrelated GUIDs.
+        # ---------------------------------------------------------------
+
+        $updateId = $null
+
+        # Current Catalog result rows normally expose the GUID through
+        # goToDetails(...).
+        $idMatch = [regex]::Match(
+            $row,
+            '(?is)goToDetails\(\s*["'']([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["'']\s*\)'
         )
 
-        if ($updateIds.Count -eq 0) {
+        if ($idMatch.Success) {
+            $updateId = $idMatch.Groups[1].Value
+        }
+
+        # Fallback for Catalog HTML variants where the GUID is associated
+        # with an input element rather than goToDetails().
+        if ([string]::IsNullOrWhiteSpace($updateId)) {
+
+            $idMatch = [regex]::Match(
+                $row,
+                '(?is)<input[^>]+(?:id|value)\s*=\s*["'']\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?["''][^>]*>'
+            )
+
+            if ($idMatch.Success) {
+                $updateId = $idMatch.Groups[1].Value
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($updateId)) {
             continue
         }
 
         $rows += [pscustomobject]@{
-            KB        = "KB$($kbMatch.Groups[1].Value)"
-            Build     = $build
-            Date      = $date
-            Title     = $text
-            UpdateIds = $updateIds
+            KB       = "KB$($kbMatch.Groups[1].Value)"
+            Build    = $build
+            Date     = $date
+            Title    = $text
+            UpdateId = $updateId
         }
     }
 
@@ -891,55 +932,82 @@ function Resolve-CatalogPackage {
 
     Write-Host ''
     Write-Host 'Selected Catalog row:'
-    Write-Host "  Type:  $ExpectedType"
-    Write-Host "  KB:    $($row.KB)"
-    Write-Host "  Build: $($row.Build)"
-    Write-Host "  Date:  $($row.Date.ToString('yyyy-MM-dd'))"
-    Write-Host "  Title: $($row.Title)"
+    Write-Host "  Type:     $ExpectedType"
+    Write-Host "  KB:       $($row.KB)"
+    Write-Host "  Build:    $($row.Build)"
+    Write-Host "  Date:     $($row.Date.ToString('yyyy-MM-dd'))"
+    Write-Host "  UpdateID: $($row.UpdateId)"
+    Write-Host "  Title:    $($row.Title)"
 
-    $download = $null
-    $selectedId = $null
+    # ---------------------------------------------------------------
+    # Download URL MUST be resolved from the SAME UpdateID that belongs
+    # to the selected Catalog row.
+    # ---------------------------------------------------------------
 
-    foreach ($id in $row.UpdateIds) {
+    $urls = @(Get-CatalogDownloadUrls -UpdateId $row.UpdateId)
 
-        $urls = @(Get-CatalogDownloadUrls -UpdateId $id)
-
-        foreach ($url in $urls) {
-
-            $name = [IO.Path]::GetFileName(
-                ([uri]$url).AbsolutePath
-            )
-
-            if ($name -match '(?i)\.(msu|cab)$') {
-
-                $download = $url
-                $selectedId = $id
-                break
-            }
-        }
-
-        if ($download) {
-            break
-        }
+    if ($urls.Count -eq 0) {
+        throw (
+            "No downloadable package found for $($row.KB) " +
+            "(UpdateID: $($row.UpdateId))."
+        )
     }
 
+    $download = $urls |
+        Where-Object {
+            $_ -match '(?i)\.(msu|cab)(?:\?|$)'
+        } |
+        Select-Object -First 1
+
     if (-not $download) {
-        throw "No downloadable package found for $($row.KB)."
+        throw (
+            "Catalog returned no MSU/CAB download for $($row.KB) " +
+            "(UpdateID: $($row.UpdateId))."
+        )
     }
 
     $fileName = [IO.Path]::GetFileName(
         ([uri]$download).AbsolutePath
     )
+    
+    if ([string]::IsNullOrWhiteSpace($fileName)) {
+        throw (
+            "Could not determine filename from Catalog URL: " +
+            $download
+        )
+    }
+
+    $kbNumber = $row.KB -replace '^KB', ''
+
+    if (
+        $ExpectedType -eq 'LCU' -and
+        $fileName -notmatch "(?i)kb$kbNumber"
+    ) {
+        throw (
+            "Catalog returned a package whose filename does not match " +
+            "the selected KB. " +
+            "KB=$($row.KB); " +
+            "UpdateID=$($row.UpdateId); " +
+            "FileName=$fileName"
+        )
+    }
+
+    Write-Host ''
+    Write-Host 'Selected Catalog package:'
+    Write-Host "  KB:       $($row.KB)"
+    Write-Host "  UpdateID: $($row.UpdateId)"
+    Write-Host "  File:     $fileName"
+    Write-Host "  URL:      $download"
 
     return [pscustomobject]@{
-        Type       = $ExpectedType
-        KB         = $row.KB
-        Build      = $row.Build
-        Date       = $row.Date
-        Title      = $row.Title
-        UpdateId   = $selectedId
-        Url        = $download
-        FileName   = $fileName
+        Type     = $ExpectedType
+        KB       = $row.KB
+        Build    = $row.Build
+        Date     = $row.Date
+        Title    = $row.Title
+        UpdateId = $row.UpdateId
+        Url      = $download
+        FileName = $fileName
     }
 }
 
