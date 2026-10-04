@@ -1712,18 +1712,35 @@ function Resolve-PackageFile {
 # Resolve Win11 checkpoint/target package set
 # -----------------------------------------------------------------------------
 
+
 function Resolve-Windows11Lcu {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Query
     )
 
+    # -------------------------------------------------------------------------
+    # Resolve the Windows Update Catalog package set.
+    #
+    # For Windows 11 24H2 checkpoint-based LCUs, this can return:
+    #
+    #   KB5043080 -> checkpoint
+    #   KB5129195 -> target
+    #
+    # Resolve-CatalogPackageSet has already selected the authoritative
+    # Catalog UpdateID and downloaded the DownloadDialog metadata exactly once.
+    # -------------------------------------------------------------------------
+
     $resolved = Resolve-CatalogPackageSet `
         -Query $Query `
         -ExpectedType LCU
 
-    $targetKb = $resolved.KB
-    $targetBuild = $resolved.Build
+    if ($null -eq $resolved) {
+        throw 'Windows 11 LCU Catalog resolution returned no result.'
+    }
+
+    $targetKb = [string]$resolved.KB
+    $targetBuild = [string]$resolved.Build
 
     if ([string]::IsNullOrWhiteSpace($targetKb)) {
         throw 'Windows 11 LCU Catalog result did not contain a target KB.'
@@ -1733,52 +1750,133 @@ function Resolve-Windows11Lcu {
     Write-Host 'Windows 11 24H2 LCU package set:'
     Write-Host "  Target KB:    $targetKb"
     Write-Host "  Target Build: $targetBuild"
+    Write-Host "  Package count: $(@($resolved.Packages).Count)"
     Write-Host ''
 
-    $resolvedPackages = New-Object System.Collections.Generic.List[object]
+    # -------------------------------------------------------------------------
+    # IMPORTANT:
+    #
+    # Use a normal PowerShell array.
+    #
+    # Do NOT use:
+    #
+    #   New-Object System.Collections.Generic.List[object]
+    #
+    # The latter has been causing:
+    #
+    #   Argument types do not match
+    #
+    # under Windows PowerShell 5.1.
+    # -------------------------------------------------------------------------
 
-    foreach ($package in $resolved.Packages) {
+    $resolvedPackages = @()
 
-        $packageKb = $package.KB
+    foreach ($package in @($resolved.Packages)) {
+
+        if ($null -eq $package) {
+            continue
+        }
+
+        $packageKb = [string]$package.KB
+        $fileName = [string]$package.FileName
+        $url = [string]$package.Url
 
         if ([string]::IsNullOrWhiteSpace($packageKb)) {
             throw @"
 Unable to determine KB from Windows 11 LCU filename.
 
-File: $($package.FileName)
+File:   $fileName
 Target: $targetKb
 "@
         }
 
+        if ([string]::IsNullOrWhiteSpace($fileName)) {
+            throw @"
+Windows 11 LCU package has no filename.
+
+KB:     $packageKb
+Target: $targetKb
+"@
+        }
+
+        if ([string]::IsNullOrWhiteSpace($url)) {
+            throw @"
+Windows 11 LCU package has no download URL.
+
+KB:     $packageKb
+File:   $fileName
+Target: $targetKb
+"@
+        }
+
+        # ---------------------------------------------------------------------
+        # Resolve the actual package into Artifactory/cache.
+        #
+        # The KB is derived from the actual MSU filename rather than inherited
+        # from the target Catalog row. This is what keeps checkpoint packages
+        # in their own Artifactory location.
+        # ---------------------------------------------------------------------
+
         $resolvedPackage = Resolve-PackageFile `
             -PackageType 'LCU' `
             -KB $packageKb `
-            -FileName $package.FileName `
-            -Url $package.Url
+            -FileName $fileName `
+            -Url $url
 
-        $resolvedPackages.Add(
-            [pscustomobject]@{
-                Type         = $package.Type
-                KB           = $packageKb
-                FileName     = $resolvedPackage.FileName
-                Url          = $resolvedPackage.Url
-                ArtifactPath = $resolvedPackage.ArtifactPath
-                LocalPath    = $resolvedPackage.LocalPath
-                Sha256       = $resolvedPackage.Sha256
-                Source       = $resolvedPackage.Source
-                UpdateId     = $package.UpdateId
+        # ---------------------------------------------------------------------
+        # Preserve checkpoint/target classification from Catalog resolution.
+        # ---------------------------------------------------------------------
+
+        $packageType = [string]$package.Type
+
+        if ([string]::IsNullOrWhiteSpace($packageType)) {
+            if ($packageKb -eq $targetKb) {
+                $packageType = 'target'
             }
-        )
+            else {
+                $packageType = 'checkpoint'
+            }
+        }
+
+        $resolvedPackageObject = [pscustomobject]@{
+            Type         = $packageType
+            KB           = $packageKb
+            FileName     = $resolvedPackage.FileName
+            Url          = $resolvedPackage.Url
+            ArtifactPath = $resolvedPackage.ArtifactPath
+            LocalPath    = $resolvedPackage.LocalPath
+            Sha256       = $resolvedPackage.Sha256
+            Source       = $resolvedPackage.Source
+            UpdateId     = $package.UpdateId
+        }
+
+        # Normal PowerShell array append.
+        $resolvedPackages += $resolvedPackageObject
     }
 
     # -------------------------------------------------------------------------
-    # Target package
+    # Validate package resolution.
+    # -------------------------------------------------------------------------
+
+    if ($resolvedPackages.Count -eq 0) {
+        throw @"
+Windows 11 LCU package set resolved from Catalog, but no packages were
+successfully resolved into the local cache.
+
+Target KB:    $targetKb
+Target Build: $targetBuild
+"@
+    }
+
+    # -------------------------------------------------------------------------
+    # Find the target package.
     # -------------------------------------------------------------------------
 
     $target = @(
-        $resolvedPackages | Where-Object {
-            $_.KB -eq $targetKb
-        }
+        $resolvedPackages |
+            Where-Object {
+                $_.KB -eq $targetKb
+            }
     )
 
     if ($target.Count -ne 1) {
@@ -1789,9 +1887,10 @@ Target KB: $targetKb
 
 Resolved packages:
 $(
-    ($resolvedPackages | ForEach-Object {
-        "  $($_.KB) - $($_.FileName)"
-    }) -join "`r`n"
+    ($resolvedPackages |
+        ForEach-Object {
+            "  [$($_.Type)] $($_.KB) - $($_.FileName)"
+        }) -join "`r`n"
 )
 "@
     }
@@ -1799,10 +1898,46 @@ $(
     $targetPackage = $target[0]
 
     # -------------------------------------------------------------------------
+    # Verify target package classification.
+    # -------------------------------------------------------------------------
+
+    if ($targetPackage.Type -ne 'target') {
+        Write-Host ''
+        Write-Host 'WARNING: Target package was not classified as target by the'
+        Write-Host 'Catalog resolver. Correcting classification based on target KB.'
+        Write-Host ''
+
+        $targetPackage = [pscustomobject]@{
+            Type         = 'target'
+            KB           = $targetPackage.KB
+            FileName     = $targetPackage.FileName
+            Url          = $targetPackage.Url
+            ArtifactPath = $targetPackage.ArtifactPath
+            LocalPath    = $targetPackage.LocalPath
+            Sha256       = $targetPackage.Sha256
+            Source       = $targetPackage.Source
+            UpdateId     = $targetPackage.UpdateId
+        }
+
+        $resolvedPackages = @(
+            $resolvedPackages |
+                ForEach-Object {
+                    if ($_.KB -eq $targetKb) {
+                        $targetPackage
+                    }
+                    else {
+                        $_
+                    }
+                }
+        )
+    }
+
+    # -------------------------------------------------------------------------
     # Optional SSU inspection.
     #
-    # The target LCU may contain an SSU payload. Preserve this information for
-    # the downstream image servicing pipeline.
+    # Windows 11 cumulative MSUs can contain an SSU payload. Preserve the
+    # filename when it can be identified. This information can be used later
+    # by the image-servicing pipeline.
     # -------------------------------------------------------------------------
 
     $ssuFileName = ''
@@ -1811,11 +1946,11 @@ $(
     $sevenZipCandidates = @(
         '7z.exe',
         '7zz.exe',
-        'C:\Program Files\7-Zip\7z.exe',
         'C:\Program Files\7-Zip\7z.exe'
     )
 
     foreach ($candidate in $sevenZipCandidates) {
+
         if (
             $candidate -match '^[^\\]+$' -and
             (Get-Command $candidate -ErrorAction SilentlyContinue)
@@ -1824,26 +1959,41 @@ $(
             break
         }
 
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        if (
+            Test-Path `
+                -LiteralPath $candidate `
+                -PathType Leaf
+        ) {
             $sevenZip = $candidate
             break
         }
     }
 
+    # -------------------------------------------------------------------------
+    # Only inspect the local MSU when ResolveOnly is false.
+    # -------------------------------------------------------------------------
+
     if (
         -not $ResolveOnly -and
         -not [string]::IsNullOrWhiteSpace($sevenZip) -and
-        (Test-Path -LiteralPath $targetPackage.LocalPath -PathType Leaf)
+        (Test-Path `
+            -LiteralPath $targetPackage.LocalPath `
+            -PathType Leaf)
     ) {
         try {
+
             $sevenZipOutput = & $sevenZip `
                 'l' `
                 '-ba' `
                 '-slt' `
                 $targetPackage.LocalPath 2>&1
 
+            $sevenZipText = (
+                $sevenZipOutput -join "`r`n"
+            )
+
             $ssuMatch = [regex]::Match(
-                ($sevenZipOutput -join "`r`n"),
+                $sevenZipText,
                 '(?im)(SSU-[^\\\r\n]+\.cab)'
             )
 
@@ -1852,28 +2002,71 @@ $(
             }
         }
         catch {
-            Write-Host "WARNING: Unable to inspect target MSU for SSU payload: $($_.Exception.Message)"
+            Write-Host `
+                "WARNING: Unable to inspect target MSU for SSU payload: $($_.Exception.Message)"
         }
     }
 
+    # -------------------------------------------------------------------------
+    # Display final result.
+    # -------------------------------------------------------------------------
+
+    Write-Host ''
+    Write-Host '============================================================'
+    Write-Host ' Windows 11 LCU Resolution Complete'
+    Write-Host '============================================================'
+    Write-Host "Target KB:       $targetKb"
+    Write-Host "Target Build:    $targetBuild"
+    Write-Host "UpdateID:        $($resolved.UpdateId)"
+    Write-Host "Package count:   $($resolvedPackages.Count)"
+
+    if (-not [string]::IsNullOrWhiteSpace($ssuFileName)) {
+        Write-Host "Embedded SSU:    $ssuFileName"
+    }
+    else {
+        Write-Host 'Embedded SSU:    Not detected'
+    }
+
+    Write-Host ''
+
+    foreach ($package in $resolvedPackages) {
+
+        Write-Host "  [$($package.Type)]"
+        Write-Host "    KB:       $($package.KB)"
+        Write-Host "    File:     $($package.FileName)"
+        Write-Host "    Artifact: $($package.ArtifactPath)"
+        Write-Host "    Source:   $($package.Source)"
+    }
+
+    Write-Host '============================================================'
+    Write-Host ''
+
+    # -------------------------------------------------------------------------
+    # Return resolved Windows 11 LCU.
+    #
+    # Msu is retained for compatibility with the existing consumer.
+    # Packages contains the complete checkpoint + target package set.
+    # -------------------------------------------------------------------------
+
     return [pscustomobject]@{
-        Type          = 'LCU'
-        KB            = $targetKb
-        Build         = $targetBuild
-        Date          = $resolved.Date
-        Title         = $resolved.Title
-        UpdateId      = $resolved.UpdateId
+        Type        = 'LCU'
+        KB          = $targetKb
+        Build       = $targetBuild
+        Date        = $resolved.Date
+        Title       = $resolved.Title
+        UpdateId    = $resolved.UpdateId
 
-        # Compatibility field for existing consumers.
-        Msu           = $targetPackage
+        # Existing compatibility field.
+        Msu         = $targetPackage
 
-        # New checkpoint/target package model.
-        Packages      = @($resolvedPackages)
+        # Complete checkpoint + target package set.
+        Packages    = @($resolvedPackages)
 
         # Optional embedded SSU information.
-        SsuFileName   = $ssuFileName
+        SsuFileName = $ssuFileName
     }
 }
+
 
 # -----------------------------------------------------------------------------
 # Windows 10 package resolver
