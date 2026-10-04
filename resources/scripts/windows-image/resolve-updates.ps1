@@ -14,6 +14,7 @@ param(
     [string]$ArtifactoryUser = '',
     [string]$ArtifactoryPassword = '',
     [string]$ArtifactoryToken = '',
+    [string]$JfPath = 'jf.exe',
 
     [switch]$ForceMicrosoftDownload,
     [switch]$ResolveOnly
@@ -684,14 +685,121 @@ if ($Profile -eq 'windows11-24h2') {
             if (Test-ArtifactoryFile -RelativePath $relativePath) {
                 Write-Host "Artifactory package already exists."
             }
-            else {
-                Invoke-WebRequest `
-                    -Uri $artifactoryUrl `
-                    -Method Put `
-                    -Headers $Headers `
-                    -InFile $localPath `
-                    -UseBasicParsing `
-                    -TimeoutSec 3600
+            else {                             
+                Write-Host ""
+                Write-Host "Publishing resolved MSU to Artifactory."
+                Write-Host "  Local MSU:"
+                Write-Host "    $msuPath"
+                Write-Host "  Artifact:"
+                Write-Host "    $msuArtifactPath"
+                Write-Host "  Artifactory:"
+                Write-Host "    $ArtifactoryBaseUrl"
+                Write-Host ""
+
+                if (-not (Get-Command $JfPath -ErrorAction SilentlyContinue)) {
+                    throw "JFrog CLI was not found: $JfPath"
+                }
+
+                if (-not (Test-Path -LiteralPath $msuPath -PathType Leaf)) {
+                    throw "MSU file does not exist: $msuPath"
+                }
+
+                #
+                # Normalize Artifactory URL.
+                #
+                $jfUrl = $ArtifactoryBaseUrl.TrimEnd('/')
+
+                if (-not $jfUrl.EndsWith('/artifactory')) {
+                    $jfUrl = "$jfUrl/artifactory"
+                }
+
+                #
+                # Build authentication arguments.
+                #
+                if (-not [string]::IsNullOrWhiteSpace($ArtifactoryToken)) {
+
+                    $jfAuthArgs = @(
+                        '--access-token'
+                        $ArtifactoryToken
+                    )
+                }
+                else {
+
+                    if (
+                        [string]::IsNullOrWhiteSpace($ArtifactoryUser) -or
+                        [string]::IsNullOrWhiteSpace($ArtifactoryPassword)
+                    ) {
+                        throw "Artifactory authentication requires either ArtifactoryToken or ArtifactoryUser/ArtifactoryPassword."
+                    }
+
+                    $jfAuthArgs = @(
+                        '--user'
+                        $ArtifactoryUser
+                        '--password'
+                        $ArtifactoryPassword
+                    )
+                }
+
+                #
+                # Convert repository-relative path to JFrog artifact path.
+                #
+                $jfTarget = "$ArtifactoryRepo/$($msuArtifactPath.TrimStart('/'))"
+
+                #
+                # Upload.
+                #
+                $jfArgs = @(
+                    'rt'
+                    'upload'
+                    $msuPath
+                    $jfTarget
+                    '--url'
+                    $jfUrl
+                ) + $jfAuthArgs
+
+                #
+                # Log a sanitized command.
+                #
+                $safeAuth = if (-not [string]::IsNullOrWhiteSpace($ArtifactoryToken)) {
+                    @(
+                        '--access-token'
+                        '****'
+                    )
+                }
+                else {
+                    @(
+                        '--user'
+                        $ArtifactoryUser
+                        '--password'
+                        '****'
+                    )
+                }
+
+                $safeJfArgs = @(
+                    'rt'
+                    'upload'
+                    $msuPath
+                    $jfTarget
+                    '--url'
+                    $jfUrl
+                ) + $safeAuth
+
+                Write-Host "Executing:"
+                Write-Host "  $JfPath $($safeJfArgs -join ' ')"
+                Write-Host ""
+
+                & $JfPath @jfArgs
+
+                $jfExitCode = $LASTEXITCODE
+
+                if ($jfExitCode -ne 0) {
+                    throw "JFrog MSU upload failed with exit code $jfExitCode."
+                }
+
+                Write-Host ""
+                Write-Host "MSU published successfully."
+                Write-Host "  $jfTarget"
+                Write-Host ""
             }
         }
     }
