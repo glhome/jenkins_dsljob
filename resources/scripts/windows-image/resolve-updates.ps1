@@ -1,3 +1,4 @@
+
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
@@ -5,33 +6,35 @@ param(
 
     [Parameter(Mandatory = $false)]
     [Alias('Profile')]
-    [ValidateSet(
-        'windows11-24h2',
-        'windows10-21h2'
-    )]
+    [ValidateSet('windows11-24h2', 'windows10-21h2')]
     [string]$WindowsProfile = 'windows11-24h2',
 
-    [ValidateSet(
-        'x64',
-        'amd64',
-        'arm64'
-    )]
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('x64', 'amd64', 'arm64')]
     [string]$Architecture = 'x64',
 
+    [Parameter(Mandatory = $false)]
     [string]$ArtifactoryBaseUrl,
 
+    [Parameter(Mandatory = $false)]
     [string]$ArtifactoryRepo = 'snapshot-generic-local',
 
+    [Parameter(Mandatory = $false)]
     [string]$ArtifactoryUser,
 
+    [Parameter(Mandatory = $false)]
     [string]$ArtifactoryPassword,
 
+    [Parameter(Mandatory = $false)]
     [string]$ArtifactoryToken,
 
+    [Parameter(Mandatory = $false)]
     [string]$JfPath = 'jf.exe',
 
+    [Parameter(Mandatory = $false)]
     [switch]$ForceMicrosoftDownload,
 
+    [Parameter(Mandatory = $false)]
     [switch]$ResolveOnly
 )
 
