@@ -1214,6 +1214,7 @@ $(
 # All MSUs are retained.
 # -----------------------------------------------------------------------------
 
+
 function Resolve-CatalogPackageSet {
     param(
         [Parameter(Mandatory = $true)]
@@ -1228,11 +1229,24 @@ function Resolve-CatalogPackageSet {
         [string]$ExpectedBuild = ''
     )
 
-    $html = Get-CatalogHtml -Query $Query
+    # -------------------------------------------------------------------------
+    # Query Microsoft Update Catalog
+    # -------------------------------------------------------------------------
 
-    $rows = @(Get-CatalogRows `
-        -Html $html `
-        -ExpectedType $ExpectedType)
+    $html = Get-CatalogHtml `
+        -Query $Query
+
+    # -------------------------------------------------------------------------
+    # Find matching Catalog rows.
+    #
+    # Get-CatalogRows returns exactly one authoritative UpdateID per row.
+    # -------------------------------------------------------------------------
+
+    $rows = @(
+        Get-CatalogRows `
+            -Html $html `
+            -ExpectedType $ExpectedType
+    )
 
     if ($rows.Count -eq 0) {
         throw @"
@@ -1246,14 +1260,16 @@ Build:       $ExpectedBuild
     }
 
     # -------------------------------------------------------------------------
-    # If an exact KB is known, prefer rows containing it.
+    # Prefer the requested KB when one was supplied.
     # -------------------------------------------------------------------------
 
     if (-not [string]::IsNullOrWhiteSpace($ExpectedKb)) {
+
         $kbRows = @(
-            $rows | Where-Object {
-                $_.KB -eq $ExpectedKb
-            }
+            $rows |
+                Where-Object {
+                    $_.KB -eq $ExpectedKb
+                }
         )
 
         if ($kbRows.Count -gt 0) {
@@ -1262,14 +1278,16 @@ Build:       $ExpectedBuild
     }
 
     # -------------------------------------------------------------------------
-    # If an exact build is known, prefer it.
+    # Prefer the requested build when one was supplied.
     # -------------------------------------------------------------------------
 
     if (-not [string]::IsNullOrWhiteSpace($ExpectedBuild)) {
+
         $buildRows = @(
-            $rows | Where-Object {
-                $_.Build -eq $ExpectedBuild
-            }
+            $rows |
+                Where-Object {
+                    $_.Build -eq $ExpectedBuild
+                }
         )
 
         if ($buildRows.Count -gt 0) {
@@ -1278,184 +1296,283 @@ Build:       $ExpectedBuild
     }
 
     # -------------------------------------------------------------------------
-    # Select newest Catalog row.
+    # Select the newest Catalog row.
     #
-    # Build is the strongest discriminator for Win11.
-    # Date is the fallback.
+    # Date is the primary ordering field.
+    # Build is used as a secondary ordering field when available.
     # -------------------------------------------------------------------------
 
-    $selectedRow = $null
-
-    $buildRows = @(
-        $rows | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_.Build)
-        }
-    )
-
-    if ($buildRows.Count -gt 0) {
-        $selectedRow = $buildRows |
-            Sort-Object `
+    $selectedRow = $rows |
+        Sort-Object `
+            -Property `
                 @{ Expression = {
-                    try {
-                        [version]$_.Build
+                    if ($null -eq $_.Date) {
+                        [datetime]::MinValue
                     }
-                    catch {
-                        [version]'0.0'
+                    else {
+                        $_.Date
                     }
                 }; Descending = $true },
                 @{ Expression = {
-                    if ($null -eq $_.Date) {
-                        [datetime]::MinValue
+                    if ([string]::IsNullOrWhiteSpace($_.Build)) {
+                        [version]'0.0'
                     }
                     else {
-                        $_.Date
+                        try {
+                            [version]$_.Build
+                        }
+                        catch {
+                            [version]'0.0'
+                        }
                     }
                 }; Descending = $true } |
-            Select-Object -First 1
-    }
-    else {
-        $selectedRow = $rows |
-            Sort-Object `
-                @{ Expression = {
-                    if ($null -eq $_.Date) {
-                        [datetime]::MinValue
-                    }
-                    else {
-                        $_.Date
-                    }
-                }; Descending = $true } |
-            Select-Object -First 1
-    }
+        Select-Object -First 1
 
     if ($null -eq $selectedRow) {
-        throw "Unable to select a Catalog row for '$Query'."
+        throw @"
+Unable to select a Windows Catalog row.
+
+Query:       $Query
+Type:        $ExpectedType
+Expected KB: $ExpectedKb
+Build:       $ExpectedBuild
+"@
     }
 
     Write-Host ''
-    Write-Host 'Selected Catalog row:'
-    Write-Host "  Type:     $($selectedRow.Type)"
-    Write-Host "  KB:       $($selectedRow.KB)"
-    Write-Host "  Build:    $($selectedRow.Build)"
-    Write-Host "  Date:     $($selectedRow.Date)"
-    Write-Host "  UpdateID: $($selectedRow.UpdateId)"
-    Write-Host "  Title:    $($selectedRow.Title)"
+    Write-Host 'Selected Microsoft Update Catalog row:'
+    Write-Host "  Type:      $($selectedRow.Type)"
+    Write-Host "  KB:        $($selectedRow.KB)"
+    Write-Host "  Build:     $($selectedRow.Build)"
+    Write-Host "  Date:      $($selectedRow.Date)"
+    Write-Host "  UpdateID:  $($selectedRow.UpdateId)"
     Write-Host ''
 
     # -------------------------------------------------------------------------
-    # One UpdateID only.
+    # The selected row MUST contain exactly one authoritative UpdateID.
     # -------------------------------------------------------------------------
 
-    $updateId = $selectedRow.UpdateId
+    $updateId = [string]$selectedRow.UpdateId
 
     if ([string]::IsNullOrWhiteSpace($updateId)) {
-        throw "Selected Catalog row does not contain an UpdateID."
+        throw 'Selected Catalog row does not contain an UpdateID.'
     }
 
     # -------------------------------------------------------------------------
-    # Query DownloadDialog once.
+    # Query DownloadDialog ONCE.
+    #
+    # IMPORTANT:
+    #
+    # Windows 11 24H2 cumulative updates can use the checkpoint model.
+    #
+    # One UpdateID can therefore return:
+    #
+    #   KB5043080  -> checkpoint MSU
+    #   KB5129195  -> target LCU MSU
+    #
+    # We must retain ALL returned MSUs.
     # -------------------------------------------------------------------------
 
-    $urls = @(Get-CatalogDownloadUrls -UpdateId $updateId)
+    $urls = @(
+        Get-CatalogDownloadUrls `
+            -UpdateId $updateId
+    )
 
-    $packages = New-Object System.Collections.Generic.List[object]
+    if ($urls.Count -eq 0) {
+        throw "Catalog returned no downloadable files for UpdateID $updateId."
+    }
+
+    # -------------------------------------------------------------------------
+    # Use a normal PowerShell array.
+    #
+    # Do NOT use:
+    #
+    #   System.Collections.Generic.List[object]
+    #
+    # because Windows PowerShell 5.1 can produce:
+    #
+    #   Argument types do not match
+    # -------------------------------------------------------------------------
+
+    $packages = @()
 
     foreach ($url in $urls) {
 
-        $fileName = Get-UrlFileName -Url $url
+        if ([string]::IsNullOrWhiteSpace([string]$url)) {
+            continue
+        }
+
+        $fileName = Get-UrlFileName `
+            -Url ([string]$url)
 
         if ([string]::IsNullOrWhiteSpace($fileName)) {
             continue
         }
 
+        # Only MSU packages belong in the Windows update package set.
         if ($fileName -notmatch '(?i)\.msu$') {
             continue
         }
 
-        $packageKb = Get-KbFromFileName -FileName $fileName
+        # ---------------------------------------------------------------------
+        # Determine KB from the actual filename.
+        #
+        # This is important because the DownloadDialog response can contain
+        # both checkpoint and target packages.
+        # ---------------------------------------------------------------------
+
+        $packageKb = Get-KbFromFileName `
+            -FileName $fileName
+
+        if ([string]::IsNullOrWhiteSpace($packageKb)) {
+            Write-Host "Skipping MSU with no recognizable KB: $fileName"
+            continue
+        }
+
+        $packageKb = $packageKb.ToUpperInvariant()
+
+        # ---------------------------------------------------------------------
+        # Determine package role.
+        #
+        # The selected Catalog row identifies the target KB.
+        # Every other MSU returned by the same UpdateID is treated as a
+        # checkpoint/prerequisite package.
+        # ---------------------------------------------------------------------
 
         $packageType = 'checkpoint'
 
         if (
-            -not [string]::IsNullOrWhiteSpace($ExpectedKb) -and
-            $packageKb -eq $ExpectedKb
+            -not [string]::IsNullOrWhiteSpace($selectedRow.KB) -and
+            $packageKb -eq $selectedRow.KB
         ) {
             $packageType = 'target'
         }
 
-        $packages.Add(
-            [pscustomobject]@{
-                Type      = $packageType
-                KB        = $packageKb
-                FileName  = $fileName
-                Url       = $url
-                UpdateId  = $updateId
-                Build     = $selectedRow.Build
-                Date      = $selectedRow.Date
-                Title     = $selectedRow.Title
-            }
-        )
+        $package = [pscustomobject]@{
+            Type     = $packageType
+            KB       = $packageKb
+            FileName = $fileName
+            Url      = [string]$url
+            UpdateId = $updateId
+            Build    = $selectedRow.Build
+            Date     = $selectedRow.Date
+            Title    = $selectedRow.Title
+        }
+
+        # Normal PowerShell array append.
+        $packages += $package
     }
+
+    # -------------------------------------------------------------------------
+    # Validate package discovery.
+    # -------------------------------------------------------------------------
 
     if ($packages.Count -eq 0) {
         throw "Catalog returned no MSU packages for UpdateID $updateId."
     }
 
     # -------------------------------------------------------------------------
-    # For LCU, target KB must be present.
-    # -------------------------------------------------------------------------
-
-    $targetPackage = $null
-
-    if ($ExpectedType -eq 'LCU') {
-        $targetPackage = Select-TargetMsu `
-            -Packages @($packages) `
-            -TargetKb $selectedRow.KB
-    }
-
-    # -------------------------------------------------------------------------
     # Remove duplicate filenames.
+    #
+    # Keep the first occurrence of each actual MSU filename.
     # -------------------------------------------------------------------------
 
     $uniquePackages = @(
         $packages |
             Group-Object -Property FileName |
             ForEach-Object {
-                $_.Group | Select-Object -First 1
+                $_.Group |
+                    Select-Object -First 1
             }
     )
 
-    # Recalculate target after de-duplication.
-    if ($ExpectedType -eq 'LCU') {
-        $targetPackage = Select-TargetMsu `
-            -Packages $uniquePackages `
-            -TargetKb $selectedRow.KB
+    if ($uniquePackages.Count -eq 0) {
+        throw "Catalog package list became empty after duplicate removal."
     }
 
+    # -------------------------------------------------------------------------
+    # For LCU, identify the target package.
+    # -------------------------------------------------------------------------
+
+    $targetPackage = $null
+
+    if ($ExpectedType -eq 'LCU') {
+
+        $targetKbForSelection = [string]$selectedRow.KB
+
+        if ([string]::IsNullOrWhiteSpace($targetKbForSelection)) {
+            throw 'Selected LCU Catalog row does not contain a target KB.'
+        }
+
+        $targetPackage = Select-TargetMsu `
+            -Packages $uniquePackages `
+            -TargetKb $targetKbForSelection
+
+        if ($null -eq $targetPackage) {
+            throw @"
+The Catalog returned MSU packages, but the target LCU was not found.
+
+Target KB: $targetKbForSelection
+UpdateID:  $updateId
+
+Returned packages:
+$(
+    ($uniquePackages |
+        ForEach-Object {
+            "  $($_.KB)  $($_.FileName)"
+        }) -join [Environment]::NewLine
+)
+"@
+        }
+    }
+
+    # -------------------------------------------------------------------------
+    # Display final package set.
+    # -------------------------------------------------------------------------
+
     Write-Host ''
-    Write-Host "Resolved $ExpectedType package set:"
+    Write-Host "Resolved ${ExpectedType} package set:"
     Write-Host "  Target KB: $($selectedRow.KB)"
     Write-Host "  Build:     $($selectedRow.Build)"
     Write-Host "  Packages:  $($uniquePackages.Count)"
     Write-Host ''
 
     foreach ($package in $uniquePackages) {
+
         Write-Host "  [$($package.Type)]"
         Write-Host "    KB:       $($package.KB)"
         Write-Host "    File:     $($package.FileName)"
         Write-Host "    UpdateID: $($package.UpdateId)"
+        Write-Host "    URL:      $($package.Url)"
     }
 
+    # -------------------------------------------------------------------------
+    # Return resolved package set.
+    #
+    # For LCU:
+    #
+    #   KB       = target KB
+    #   Build    = target build
+    #   Target   = target MSU
+    #   Packages = checkpoint(s) + target MSU
+    #
+    # Keeping Target/Packages separate preserves compatibility with the
+    # existing resolver while allowing the Windows 11 checkpoint model.
+    # -------------------------------------------------------------------------
+
     return [pscustomobject]@{
-        Type       = $ExpectedType
-        KB         = $selectedRow.KB
-        Build      = $selectedRow.Build
-        Date       = $selectedRow.Date
-        Title      = $selectedRow.Title
-        UpdateId   = $selectedRow.UpdateId
-        Target     = $targetPackage
-        Packages   = $uniquePackages
+        Type     = $ExpectedType
+        KB       = $selectedRow.KB
+        Build    = $selectedRow.Build
+        Date     = $selectedRow.Date
+        Title    = $selectedRow.Title
+        UpdateId = $selectedRow.UpdateId
+        Target   = $targetPackage
+        Packages = @($uniquePackages)
     }
 }
+
+
 
 # -----------------------------------------------------------------------------
 # Resolve one package into Artifactory/cache
