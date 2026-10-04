@@ -1,3 +1,4 @@
+
 def call(Map cfg = [:]) {
     def workRoot = cfg.workRoot
     def baseIsoArtifact = cfg.baseIsoArtifact
@@ -6,8 +7,15 @@ def call(Map cfg = [:]) {
     def architecture = cfg.architecture ?: 'x64'
     def artifactoryBaseUrl = cfg.artifactoryBaseUrl
     def artifactoryRepo = cfg.artifactoryRepo ?: 'snapshot-generic-local'
+
     def artifactTransferMethod =
         cfg.artifactTransferMethod ?: 'InvokeWebRequest'
+
+    def jfPath =
+        cfg.jfPath ?: 'jf.exe'
+
+    def artifactoryToken =
+        cfg.artifactoryToken ?: 'cmVmdGtuOjAxOjE4MjI0NTIwMTE6RnJLRWhHTHdnR01xdzRadU9hSVpVUkJjaEE4'
 
     if (!workRoot?.trim()) {
         error 'workRoot is required'
@@ -19,6 +27,15 @@ def call(Map cfg = [:]) {
 
     if (!artifactoryBaseUrl?.trim()) {
         error 'artifactoryBaseUrl is required'
+    }
+
+    if (
+        !['InvokeWebRequest', 'JFrog']
+            .contains(artifactTransferMethod)
+    ) {
+        error(
+            "Unsupported artifactTransferMethod: ${artifactTransferMethod}"
+        )
     }
 
     // ========================================================
@@ -38,12 +55,7 @@ def call(Map cfg = [:]) {
     )
 
     // ========================================================
-    // IMPORTANT:
-    //
-    // resolve-updates.ps1 expects profiles.ps1 in the same
-    // directory as itself.
-    //
-    // download.ps1 receives ProfileScriptPath explicitly.
+    // Script paths
     // ========================================================
 
     def downloadScriptPath =
@@ -74,7 +86,8 @@ def call(Map cfg = [:]) {
     // Verify generated scripts
     // ========================================================
 
-    powershell '''
+    powershell(
+        '''
 $ErrorActionPreference = 'Stop'
 
 $required = @(
@@ -90,6 +103,22 @@ foreach ($file in $required) {
 
     Write-Host "Verified Windows image script: $file"
 }
+
+# Verify PowerShell syntax before running the image workflow.
+$scriptText = Get-Content `
+    -LiteralPath '__DOWNLOAD_SCRIPT_PATH__' `
+    -Raw
+
+try {
+    [void][scriptblock]::Create($scriptText)
+    Write-Host "Verified PowerShell syntax: __DOWNLOAD_SCRIPT_PATH__"
+}
+catch {
+    throw (
+        "download.ps1 contains invalid PowerShell syntax: " +
+        $_.Exception.Message
+    )
+}
 '''
         .replace(
             '__DOWNLOAD_SCRIPT_PATH__',
@@ -103,6 +132,7 @@ foreach ($file in $required) {
             '__PROFILE_SCRIPT_PATH__',
             profileScriptPath
         )
+    )
 
     // ========================================================
     // Run download / resolve script
@@ -129,6 +159,8 @@ $ErrorActionPreference = 'Stop'
     -ArtifactoryBaseUrl '__ARTIFACTORY_BASE_URL__' `
     -ArtifactoryRepo '__ARTIFACTORY_REPO__' `
     -ArtifactTransferMethod '__ARTIFACT_TRANSFER_METHOD__' `
+    -JfPath '__JF_PATH__' `
+    -ArtifactoryToken '__ARTIFACTORY_TOKEN__' `
     -ArtifactoryUser $env:ARTIFACTORY_USER `
     -ArtifactoryPassword $env:ARTIFACTORY_PASSWORD `
     -ResolverScriptPath '__RESOLVER_SCRIPT_PATH__' `
@@ -173,6 +205,14 @@ if ($LASTEXITCODE -ne 0) {
             .replace(
                 '__ARTIFACT_TRANSFER_METHOD__',
                 artifactTransferMethod
+            )
+            .replace(
+                '__JF_PATH__',
+                jfPath
+            )
+            .replace(
+                '__ARTIFACTORY_TOKEN__',
+                artifactoryToken
             )
             .replace(
                 '__RESOLVER_SCRIPT_PATH__',
@@ -400,6 +440,7 @@ Write-Output ("ISO=" + [string]$j.isoArtifactPath)
     echo "Resolved LCU: ${kb} / ${lcuBuild}"
     echo "Patched manifest: ${manifestArtifactPath}"
     echo "Patched ISO: ${isoArtifactPath}"
+    echo "Artifact transfer method: ${artifactTransferMethod}"
     echo "Cache hit: ${cacheHit}"
 
     // ========================================================
@@ -421,3 +462,4 @@ Write-Output ("ISO=" + [string]$j.isoArtifactPath)
         isoArtifactPath: isoArtifactPath
     ]
 }
+
