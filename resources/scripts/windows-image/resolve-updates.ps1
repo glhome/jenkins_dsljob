@@ -89,13 +89,13 @@ if (-not (Get-Command Get-WindowsImageProfile -ErrorAction SilentlyContinue)) {
     throw "Get-WindowsImageProfile was not found after loading '$profilesPath'."
 }
 
-$imageProfile = Get-WindowsImageProfile -Profile $WindowsProfile
+$imageProfile = Get-WindowsImageProfile -Name $WindowsProfile
 
 if ($null -eq $imageProfile) {
-    throw "Windows image profile '$Profile' was not found."
+    throw "Windows image profile '$WindowsProfile' was not found."
 }
 
-Write-Host "Loaded image profile: $Profile"
+Write-Host "Loaded image profile: $WindowsProfile"
 
 # -----------------------------------------------------------------------------
 # Generic profile property helper
@@ -701,6 +701,7 @@ function Get-CatalogRowUpdateId {
 # Catalog row parser
 # -----------------------------------------------------------------------------
 
+
 function Get-CatalogRows {
     param(
         [Parameter(Mandatory = $true)]
@@ -711,20 +712,47 @@ function Get-CatalogRows {
         [string]$ExpectedType
     )
 
-    $rows = New-Object System.Collections.Generic.List[object]
+    # Use a normal PowerShell array instead of
+    # System.Collections.Generic.List[object].
+    #
+    # Windows PowerShell 5.1 can produce:
+    #   "Argument types do not match"
+    #
+    # when generic .NET collections are combined with
+    # PowerShell pipeline/object conversion.
+    $rows = @()
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return @()
+    }
+
+    # -------------------------------------------------------------------------
+    # Extract Catalog table rows
+    # -------------------------------------------------------------------------
 
     $trMatches = [regex]::Matches(
-        $Html,
+        [string]$Html,
         '(?is)<tr\b[^>]*>.*?</tr>'
     )
 
     foreach ($trMatch in $trMatches) {
 
-        $rowHtml = $trMatch.Value
+        $rowHtml = [string]$trMatch.Value
 
-        # Strip tags for matching/display.
+        if ([string]::IsNullOrWhiteSpace($rowHtml)) {
+            continue
+        }
+
+        # ---------------------------------------------------------------------
+        # Convert HTML row to searchable text
+        # ---------------------------------------------------------------------
+
+        $rowText = $rowHtml
+
+        # Remove script/style blocks first so their GUIDs, URLs, etc.
+        # do not accidentally become part of the row metadata.
         $rowText = [regex]::Replace(
-            $rowHtml,
+            $rowText,
             '(?is)<script\b[^>]*>.*?</script>',
             ' '
         )
@@ -735,16 +763,24 @@ function Get-CatalogRows {
             ' '
         )
 
+        # Replace HTML tags with spaces.
         $rowText = [regex]::Replace(
             $rowText,
             '(?is)<[^>]+>',
             ' '
         )
 
-        $rowText = [System.Net.WebUtility]::HtmlDecode($rowText)
+        # Decode HTML entities.
+        try {
+            $rowText = [System.Net.WebUtility]::HtmlDecode($rowText)
+        }
+        catch {
+            # Keep the undecoded text if WebUtility is unavailable/fails.
+        }
 
+        # Normalize whitespace.
         $rowText = [regex]::Replace(
-            $rowText,
+            [string]$rowText,
             '\s+',
             ' '
         ).Trim()
@@ -754,7 +790,7 @@ function Get-CatalogRows {
         }
 
         # ---------------------------------------------------------------------
-        # Product filtering
+        # Product
         # ---------------------------------------------------------------------
 
         if (
@@ -765,7 +801,7 @@ function Get-CatalogRows {
         }
 
         # ---------------------------------------------------------------------
-        # Classification filtering
+        # Classification
         # ---------------------------------------------------------------------
 
         if (
@@ -776,11 +812,7 @@ function Get-CatalogRows {
         }
 
         # ---------------------------------------------------------------------
-        # Security Updates filtering
-        #
-        # Win11 profile requires this because the Catalog can expose multiple
-        # related rows.
-        # Win10 profile intentionally does not.
+        # Security Updates
         # ---------------------------------------------------------------------
 
         if (
@@ -791,7 +823,7 @@ function Get-CatalogRows {
         }
 
         # ---------------------------------------------------------------------
-        # Architecture filtering
+        # Architecture
         # ---------------------------------------------------------------------
 
         if (
@@ -819,10 +851,10 @@ function Get-CatalogRows {
         # ---------------------------------------------------------------------
         # Build
         #
-        # Win11:
+        # Windows 11:
         #   26100.9457
         #
-        # Win10:
+        # Windows 10:
         #   Some Catalog rows do not expose a usable build number.
         # ---------------------------------------------------------------------
 
@@ -871,34 +903,66 @@ function Get-CatalogRows {
         # UpdateID
         #
         # IMPORTANT:
-        # Exactly one UpdateID is retained for this Catalog row.
+        #
+        # A Catalog <tr> can contain multiple GUIDs in its HTML because the
+        # row contains links/buttons such as "Download" and "Details".
+        #
+        # Get-CatalogRowUpdateId is responsible for selecting ONE authoritative
+        # UpdateID for this row.
+        #
+        # Do NOT enumerate every GUID here.
+        # Do NOT call DownloadDialog for every GUID.
         # ---------------------------------------------------------------------
 
-        $updateId = Get-CatalogRowUpdateId -RowHtml $rowHtml
+        $updateId = Get-CatalogRowUpdateId `
+            -RowHtml $rowHtml
 
         if ([string]::IsNullOrWhiteSpace($updateId)) {
             continue
         }
+
+        # Normalize the GUID representation.
+        $updateId = $updateId.Trim().Trim('{}').ToLowerInvariant()
+
+        # Validate that the selected value actually looks like a GUID.
+        $guidValue = [guid]::Empty
+
+        if (
+            -not [guid]::TryParse(
+                $updateId,
+                [ref]$guidValue
+            )
+        ) {
+            continue
+        }
+
+        $updateId = $guidValue.ToString()
 
         # ---------------------------------------------------------------------
         # Store candidate
         # ---------------------------------------------------------------------
 
         $candidate = [pscustomobject]@{
-            Type      = $ExpectedType
-            KB        = $kb
-            Build     = $build
-            Date      = $date
-            UpdateId  = $updateId
-            Title     = $rowText
-            RowHtml   = $rowHtml
+            Type     = $ExpectedType
+            KB       = $kb
+            Build    = $build
+            Date     = $date
+            UpdateId = $updateId
+            Title    = $rowText
+            RowHtml  = $rowHtml
         }
 
-        $rows.Add($candidate)
+        # Normal PowerShell array append.
+        $rows += $candidate
     }
+
+    # -------------------------------------------------------------------------
+    # Return a predictable array.
+    # -------------------------------------------------------------------------
 
     return @($rows)
 }
+
 
 # -----------------------------------------------------------------------------
 # Catalog DownloadDialog
