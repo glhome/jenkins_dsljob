@@ -2041,7 +2041,34 @@ function Resolve-PackageFile {
 function Resolve-Windows11Lcu {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Query
+        [string]$Query,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ArtifactRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Architecture,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ArtifactoryBaseUrl,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ArtifactoryRepo,
+
+        [string]$ArtifactoryUser = '',
+
+        [string]$ArtifactoryPassword = '',
+
+        [string]$ArtifactoryToken = '',
+
+        [string]$JfPath = 'jf.exe',
+
+        [switch]$ForceMicrosoftDownload,
+
+        [switch]$ResolveOnly
     )
 
     # -------------------------------------------------------------------------
