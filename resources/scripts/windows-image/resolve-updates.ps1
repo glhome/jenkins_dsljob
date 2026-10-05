@@ -1572,15 +1572,12 @@ $(
     }
 }
 
-
-
 # -----------------------------------------------------------------------------
 # Resolve one package into Artifactory/cache
 #
 # The KB is derived from the actual package when possible.
 # This prevents checkpoint KB5043080 from being stored beneath KB5129195.
 # -----------------------------------------------------------------------------
-
 function Resolve-PackageFile {
     [CmdletBinding()]
     param(
@@ -1619,34 +1616,54 @@ function Resolve-PackageFile {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
 
-    if (-not $Package) {
+    # -------------------------------------------------------------------------
+    # Validate package
+    # -------------------------------------------------------------------------
+
+    if ($null -eq $Package) {
         throw 'Package information is required.'
     }
 
-    if ([string]::IsNullOrWhiteSpace([string]$Package.fileName)) {
-        throw 'Package fileName is missing.'
+    if (
+        -not $Package.PSObject.Properties.Name -contains 'FileName' -or
+        [string]::IsNullOrWhiteSpace([string]$Package.FileName)
+    ) {
+        throw 'Package FileName is missing.'
     }
 
-    $fileName = [string]$Package.fileName
-
-    if ([string]::IsNullOrWhiteSpace([string]$Package.kb)) {
-        throw "Package KB is missing for '$fileName'."
+    if (
+        -not $Package.PSObject.Properties.Name -contains 'KB' -or
+        [string]::IsNullOrWhiteSpace([string]$Package.KB)
+    ) {
+        throw "Package KB is missing for '$($Package.FileName)'."
     }
 
-    $packageKb = [string]$Package.kb
+    $fileName = [string]$Package.FileName
+    $packageKb = ([string]$Package.KB).Trim().ToUpperInvariant()
 
     if ([string]::IsNullOrWhiteSpace($PackageType)) {
         $PackageType = 'LCU'
     }
 
-    #
-    # ============================================================
+    # -------------------------------------------------------------------------
+    # Validate/update URL
+    # -------------------------------------------------------------------------
+
+    $downloadUrl = ''
+
+    if (
+        $Package.PSObject.Properties.Name -contains 'Url' -and
+        -not [string]::IsNullOrWhiteSpace([string]$Package.Url)
+    ) {
+        $downloadUrl = [string]$Package.Url
+    }
+
+    # -------------------------------------------------------------------------
     # Workspace layout
-    # ============================================================
     #
     # IMPORTANT:
     #
-    # All update packages are FLAT in the Jenkins workspace:
+    # Local Jenkins workspace is ALWAYS FLAT:
     #
     #   download\
     #       resolved-updates.json
@@ -1654,27 +1671,31 @@ function Resolve-PackageFile {
     #           windows11.0-kb5043080-....msu
     #           windows11.0-kb5129195-....msu
     #
-    # Artifactory remains hierarchical:
+    # Do NOT create:
+    #
+    #   updates\LCU\KB5043080\...
+    #
+    # -------------------------------------------------------------------------
+
+    if (-not (Test-Path -LiteralPath $UpdatesDir -PathType Container)) {
+        New-Item `
+            -ItemType Directory `
+            -Path $UpdatesDir `
+            -Force | Out-Null
+    }
+
+    $localPath = Join-Path $UpdatesDir $fileName
+
+    # -------------------------------------------------------------------------
+    # Artifactory layout
+    #
+    # Artifactory remains hierarchical by package KB:
     #
     #   Windows11/24H2/x64/LCU/KB5043080/file.msu
     #   Windows11/24H2/x64/LCU/KB5129195/file.msu
     #
-    # ============================================================
-
-    if (-not (Test-Path -LiteralPath $UpdatesDir -PathType Container)) {
-        New-Item -ItemType Directory -Path $UpdatesDir -Force | Out-Null
-    }
-
-    #
-    # FLAT LOCAL PATH -- do NOT add PackageType/KB directories.
-    #
-    $localPath = Join-Path $UpdatesDir $fileName
-
-    #
-    # ============================================================
-    # Artifactory path
-    # ============================================================
-    #
+    # This is deliberately independent from the local workspace layout.
+    # -------------------------------------------------------------------------
 
     $artifactPath = (
         "$ArtifactRoot/" +
@@ -1686,45 +1707,58 @@ function Resolve-PackageFile {
 
     $artifactPath = $artifactPath.Replace('\', '/')
 
-    #
-    # ============================================================
+    $artifact = (
+        "$ArtifactoryRepo/" +
+        "$artifactPath"
+    ).Replace('\', '/')
+
+    # -------------------------------------------------------------------------
+    # Expected SHA256
+    # -------------------------------------------------------------------------
+
+    $expectedSha256 = ''
+
+    if (
+        $Package.PSObject.Properties.Name -contains 'Sha256' -and
+        -not [string]::IsNullOrWhiteSpace([string]$Package.Sha256)
+    ) {
+        $expectedSha256 =
+            ([string]$Package.Sha256).Trim().ToLowerInvariant()
+    }
+
+    # -------------------------------------------------------------------------
     # Local cache
-    # ============================================================
-    #
+    # -------------------------------------------------------------------------
 
     if (Test-Path -LiteralPath $localPath -PathType Leaf) {
 
-        $expectedSha256 = $null
-
-        if (
-            $Package.PSObject.Properties.Name -contains 'sha256' -and
-            -not [string]::IsNullOrWhiteSpace([string]$Package.sha256)
-        ) {
-            $expectedSha256 =
-                ([string]$Package.sha256).Trim().ToLowerInvariant()
-        }
-
         $actualSha256 = (
-            (Get-FileHash -LiteralPath $localPath -Algorithm SHA256).Hash
-        ).ToLowerInvariant()
+            Get-FileHash `
+                -LiteralPath $localPath `
+                -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
 
         if (
-            $null -eq $expectedSha256 -or
+            [string]::IsNullOrWhiteSpace($expectedSha256) -or
             $actualSha256 -eq $expectedSha256
         ) {
+
             Write-Host ''
             Write-Host 'Local update cache hit:'
-            Write-Host "  File:   $localPath"
-            Write-Host "  SHA256: $actualSha256"
+            Write-Host "  KB:      $packageKb"
+            Write-Host "  File:    $fileName"
+            Write-Host "  Path:    $localPath"
+            Write-Host "  SHA256:  $actualSha256"
 
             return [pscustomobject]@{
-                kb           = $packageKb
-                type         = $PackageType
-                fileName     = $fileName
-                localPath    = $localPath
-                artifactPath = $artifactPath
-                source       = 'local-cache'
-                sha256       = $actualSha256
+                KB           = $packageKb
+                Type         = $PackageType
+                FileName     = $fileName
+                Url          = $downloadUrl
+                ArtifactPath = $artifactPath
+                LocalPath    = $localPath
+                Sha256       = $actualSha256
+                Source       = 'local-cache'
             }
         }
 
@@ -1734,28 +1768,31 @@ function Resolve-PackageFile {
             "The file will be replaced."
         )
 
-        Remove-Item -LiteralPath $localPath -Force
+        Remove-Item `
+            -LiteralPath $localPath `
+            -Force
     }
 
-    #
-    # ============================================================
+    # -------------------------------------------------------------------------
     # Artifactory
-    # ============================================================
-    #
+    # -------------------------------------------------------------------------
 
     if (-not $ForceMicrosoftDownload) {
 
-        $tempPath = "$localPath.download"
+        $temporaryPath = "$localPath.download"
 
-        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
-            Remove-Item -LiteralPath $tempPath -Force
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item `
+                -LiteralPath $temporaryPath `
+                -Force `
+                -ErrorAction SilentlyContinue
         }
 
         $jfArgs = @(
             'rt'
             'download'
-            "$ArtifactoryRepo/$artifactPath"
-            $tempPath
+            $artifact
+            $temporaryPath
             '--flat=true'
             '--threads=4'
             "--url=$ArtifactoryBaseUrl"
@@ -1772,148 +1809,76 @@ function Resolve-PackageFile {
 
             $jfArgs += '--user'
             $jfArgs += $ArtifactoryUser
+
             $jfArgs += '--password'
             $jfArgs += $ArtifactoryPassword
+        }
+        else {
+            Write-Warning `
+                'No Artifactory token or username/password was supplied.'
+        }
+
+        # ---------------------------------------------------------------------
+        # Safe command logging
+        # ---------------------------------------------------------------------
+
+        $safeJfArgs = @()
+
+        foreach ($arg in $jfArgs) {
+
+            if (
+                $arg -eq "--access-token=$ArtifactoryToken" -or
+                $arg -eq $ArtifactoryPassword
+            ) {
+                $safeJfArgs += '***'
+            }
+            else {
+                $safeJfArgs += $arg
+            }
         }
 
         Write-Host ''
         Write-Host 'Downloading from Artifactory:'
-        Write-Host "  $ArtifactoryRepo/$artifactPath"
+        Write-Host "  Artifact:    $artifact"
         Write-Host "  Destination: $localPath"
+        Write-Host "  JFrog:       $JfPath $($safeJfArgs -join ' ')"
 
         & $JfPath @jfArgs
 
+        $jfExitCode = $LASTEXITCODE
+
         if (
-            $LASTEXITCODE -eq 0 -and
-            (Test-Path -LiteralPath $tempPath -PathType Leaf)
+            $jfExitCode -eq 0 -and
+            (Test-Path -LiteralPath $temporaryPath -PathType Leaf)
         ) {
 
+            $temporaryInfo = Get-Item -LiteralPath $temporaryPath
+
+            if ($temporaryInfo.Length -le 0) {
+
+                Remove-Item `
+                    -LiteralPath $temporaryPath `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+
+                throw "JFrog downloaded an empty file for '$fileName'."
+            }
+
             Move-Item `
-                -LiteralPath $tempPath `
+                -LiteralPath $temporaryPath `
                 -Destination $localPath `
                 -Force
 
             $actualSha256 = (
-                (Get-FileHash -LiteralPath $localPath -Algorithm SHA256).Hash
-            ).ToLowerInvariant()
+                Get-FileHash `
+                    -LiteralPath $localPath `
+                    -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
 
             if (
-                $Package.PSObject.Properties.Name -contains 'sha256' -and
-                -not [string]::IsNullOrWhiteSpace([string]$Package.sha256)
+                -not [string]::IsNullOrWhiteSpace($expectedSha256) -and
+                $actualSha256 -ne $expectedSha256
             ) {
-
-                $expectedSha256 =
-                    ([string]$Package.sha256).Trim().ToLowerInvariant()
-
-                if ($actualSha256 -ne $expectedSha256) {
-
-                    Remove-Item `
-                        -LiteralPath $localPath `
-                        -Force `
-                        -ErrorAction SilentlyContinue
-
-                    throw (
-                        "SHA256 mismatch for '$fileName'. " +
-                        "Expected '$expectedSha256', actual '$actualSha256'."
-                    )
-                }
-            }
-
-            Write-Host ''
-            Write-Host 'Artifactory download successful:'
-            Write-Host "  $localPath"
-            Write-Host "  SHA256: $actualSha256"
-
-            return [pscustomobject]@{
-                kb           = $packageKb
-                type         = $PackageType
-                fileName     = $fileName
-                localPath    = $localPath
-                artifactPath = $artifactPath
-                source       = 'artifactory'
-                sha256       = $actualSha256
-            }
-        }
-
-        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
-            Remove-Item `
-                -LiteralPath $tempPath `
-                -Force `
-                -ErrorAction SilentlyContinue
-        }
-
-        Write-Warning (
-            "Package '$fileName' was not successfully downloaded from Artifactory."
-        )
-    }
-
-    #
-    # ============================================================
-    # Microsoft Catalog fallback
-    # ============================================================
-    #
-
-    if (
-        $Package.PSObject.Properties.Name -contains 'url' -and
-        -not [string]::IsNullOrWhiteSpace([string]$Package.url)
-    ) {
-
-        $downloadUrl = [string]$Package.url
-        $tempPath = "$localPath.download"
-
-        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
-            Remove-Item -LiteralPath $tempPath -Force
-        }
-
-        Write-Host ''
-        Write-Host 'Downloading package from Microsoft Catalog:'
-        Write-Host "  $downloadUrl"
-        Write-Host "  Destination: $localPath"
-
-        try {
-
-            Invoke-WebRequest `
-                -Uri $downloadUrl `
-                -OutFile $tempPath `
-                -UseBasicParsing
-
-            if (-not (Test-Path -LiteralPath $tempPath -PathType Leaf)) {
-                throw "Microsoft download did not create '$tempPath'."
-            }
-
-            Move-Item `
-                -LiteralPath $tempPath `
-                -Destination $localPath `
-                -Force
-        }
-        catch {
-
-            if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
-                Remove-Item `
-                    -LiteralPath $tempPath `
-                    -Force `
-                    -ErrorAction SilentlyContinue
-            }
-
-            throw (
-                "Failed to download package '$fileName' from Microsoft Catalog. " +
-                $_.Exception.Message
-            )
-        }
-
-        $actualSha256 = (
-            (Get-FileHash -LiteralPath $localPath -Algorithm SHA256).Hash
-        ).ToLowerInvariant()
-
-        if (
-            $Package.PSObject.Properties.Name -contains 'sha256' -and
-            -not [string]::IsNullOrWhiteSpace([string]$Package.sha256)
-        ) {
-
-            $expectedSha256 =
-                ([string]$Package.sha256).Trim().ToLowerInvariant()
-
-            if ($actualSha256 -ne $expectedSha256) {
 
                 Remove-Item `
                     -LiteralPath $localPath `
@@ -1921,32 +1886,150 @@ function Resolve-PackageFile {
                     -ErrorAction SilentlyContinue
 
                 throw (
-                    "SHA256 mismatch for Microsoft package '$fileName'. " +
+                    "SHA256 mismatch for '$fileName'. " +
                     "Expected '$expectedSha256', actual '$actualSha256'."
                 )
             }
+
+            Write-Host ''
+            Write-Host 'Artifactory download successful:'
+            Write-Host "  KB:       $packageKb"
+            Write-Host "  File:     $fileName"
+            Write-Host "  Local:    $localPath"
+            Write-Host "  Artifact: $artifactPath"
+            Write-Host "  SHA256:   $actualSha256"
+
+            return [pscustomobject]@{
+                KB           = $packageKb
+                Type         = $PackageType
+                FileName     = $fileName
+                Url          = $downloadUrl
+                ArtifactPath = $artifactPath
+                LocalPath    = $localPath
+                Sha256       = $actualSha256
+                Source       = 'artifactory'
+            }
         }
 
-        Write-Host ''
-        Write-Host 'Microsoft Catalog download successful:'
-        Write-Host "  $localPath"
-        Write-Host "  SHA256: $actualSha256"
-
-        return [pscustomobject]@{
-            kb           = $packageKb
-            type         = $PackageType
-            fileName     = $fileName
-            localPath    = $localPath
-            artifactPath = $artifactPath
-            source       = 'microsoft'
-            sha256       = $actualSha256
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item `
+                -LiteralPath $temporaryPath `
+                -Force `
+                -ErrorAction SilentlyContinue
         }
+
+        Write-Warning (
+            "Package '$fileName' was not successfully downloaded from " +
+            "Artifactory. JFrog exit code: $jfExitCode"
+        )
     }
 
-    throw (
-        "Unable to obtain package '$fileName' ($packageKb). " +
-        "No usable Artifactory artifact or Microsoft Catalog URL was available."
-    )
+    # -------------------------------------------------------------------------
+    # Microsoft Catalog fallback
+    # -------------------------------------------------------------------------
+
+    if ([string]::IsNullOrWhiteSpace($downloadUrl)) {
+
+        throw (
+            "Unable to obtain package '$fileName' ($packageKb). " +
+            "No usable Artifactory artifact or Microsoft Catalog URL was " +
+            "available."
+        )
+    }
+
+    $temporaryPath = "$localPath.download"
+
+    if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+        Remove-Item `
+            -LiteralPath $temporaryPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+
+    Write-Host ''
+    Write-Host 'Downloading package from Microsoft Catalog:'
+    Write-Host "  KB:          $packageKb"
+    Write-Host "  File:        $fileName"
+    Write-Host "  Destination: $localPath"
+    Write-Host "  URL:         $downloadUrl"
+
+    try {
+
+        Invoke-WebRequest `
+            -Uri $downloadUrl `
+            -OutFile $temporaryPath `
+            -UseBasicParsing `
+            -TimeoutSec 300
+
+        if (-not (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
+            throw "Microsoft download did not create '$temporaryPath'."
+        }
+
+        $temporaryInfo = Get-Item -LiteralPath $temporaryPath
+
+        if ($temporaryInfo.Length -le 0) {
+            throw "Microsoft download produced an empty file: $temporaryPath"
+        }
+
+        Move-Item `
+            -LiteralPath $temporaryPath `
+            -Destination $localPath `
+            -Force
+    }
+    catch {
+
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item `
+                -LiteralPath $temporaryPath `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+
+        throw (
+            "Failed to download package '$fileName' from Microsoft Catalog. " +
+            $_.Exception.Message
+        )
+    }
+
+    $actualSha256 = (
+        Get-FileHash `
+            -LiteralPath $localPath `
+            -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+
+    if (
+        -not [string]::IsNullOrWhiteSpace($expectedSha256) -and
+        $actualSha256 -ne $expectedSha256
+    ) {
+
+        Remove-Item `
+            -LiteralPath $localPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+        throw (
+            "SHA256 mismatch for Microsoft package '$fileName'. " +
+            "Expected '$expectedSha256', actual '$actualSha256'."
+        )
+    }
+
+    Write-Host ''
+    Write-Host 'Microsoft Catalog download successful:'
+    Write-Host "  KB:       $packageKb"
+    Write-Host "  File:     $fileName"
+    Write-Host "  Local:    $localPath"
+    Write-Host "  SHA256:   $actualSha256"
+
+    return [pscustomobject]@{
+        KB           = $packageKb
+        Type         = $PackageType
+        FileName     = $fileName
+        Url          = $downloadUrl
+        ArtifactPath = $artifactPath
+        LocalPath    = $localPath
+        Sha256       = $actualSha256
+        Source       = 'microsoft'
+    }
 }
 
 
