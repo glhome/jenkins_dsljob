@@ -129,7 +129,7 @@ $Product = [string](Get-ProfileProperty -ProfileObject $imageProfile -Name 'Prod
 $Release = [string](Get-ProfileProperty -ProfileObject $imageProfile -Name 'Release')
 
 if ([string]::IsNullOrWhiteSpace($Product)) {
-    throw "Profile '$Profile' does not define Product."
+    throw "Profile '$WindowsProfile' does not define Product."
 }
 
 if ([string]::IsNullOrWhiteSpace($Release)) {
@@ -2142,11 +2142,33 @@ Target: $targetKb
         # in their own Artifactory location.
         # ---------------------------------------------------------------------
 
+        $packageForResolution = [pscustomobject]@{
+            KB       = $packageKb
+            FileName = $fileName
+            Url      = $url
+            Sha256   = if (
+                $package.PSObject.Properties.Name -contains 'Sha256'
+            ) {
+                [string]$package.Sha256
+            }
+            else {
+                ''
+            }
+        }
+
         $resolvedPackage = Resolve-PackageFile `
+            -Package $packageForResolution `
+            -UpdatesDir $UpdatesRoot `
+            -ArtifactRoot $ArtifactRoot `
+            -Architecture $Architecture `
+            -ArtifactoryBaseUrl $ArtifactoryRoot `
+            -ArtifactoryRepo $ArtifactoryRepo `
             -PackageType 'LCU' `
-            -KB $packageKb `
-            -FileName $fileName `
-            -Url $url
+            -ArtifactoryUser $ArtifactoryUser `
+            -ArtifactoryPassword $ArtifactoryPassword `
+            -ArtifactoryToken $ArtifactoryToken `
+            -JfPath $JfPath `
+            -ForceMicrosoftDownload:$ForceMicrosoftDownload
 
         # ---------------------------------------------------------------------
         # Preserve checkpoint/target classification from Catalog resolution.
@@ -2453,27 +2475,49 @@ UpdateID: $($resolved.UpdateId)
         }
         else {
             throw @"
-Multiple MSUs were returned for Windows 10 $PackageType.
+            Multiple MSUs were returned for Windows 10 $PackageType.
 
-KB: $targetKb
+            KB: $targetKb
 
-Packages:
-$(
-    ($package | ForEach-Object {
-        "  $($_.FileName)"
-    }) -join "`r`n"
-)
-"@
+            Packages:
+            $(
+                ($package | ForEach-Object {
+                    "  $($_.FileName)"
+                }) -join "`r`n"
+            )
+            "@
         }
     }
 
     $selected = $package[0]
 
+    $packageForResolution = [pscustomobject]@{
+        KB       = [string]$selected.KB
+        FileName = [string]$selected.FileName
+        Url      = [string]$selected.Url
+        Sha256   = if (
+            $selected.PSObject.Properties.Name -contains 'Sha256'
+        ) {
+            [string]$selected.Sha256
+        }
+        else {
+            ''
+        }
+    }
+
     $resolvedFile = Resolve-PackageFile `
+        -Package $packageForResolution `
+        -UpdatesDir $UpdatesRoot `
+        -ArtifactRoot $ArtifactRoot `
+        -Architecture $Architecture `
+        -ArtifactoryBaseUrl $ArtifactoryRoot `
+        -ArtifactoryRepo $ArtifactoryRepo `
         -PackageType $PackageType `
-        -KB $targetKb `
-        -FileName $selected.FileName `
-        -Url $selected.Url
+        -ArtifactoryUser $ArtifactoryUser `
+        -ArtifactoryPassword $ArtifactoryPassword `
+        -ArtifactoryToken $ArtifactoryToken `
+        -JfPath $JfPath `
+        -ForceMicrosoftDownload:$ForceMicrosoftDownload
 
     return [pscustomobject]@{
         Type         = $PackageType
@@ -2880,7 +2924,7 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
 }
 
 else {
-    throw "Unsupported Windows image profile '$Profile'."
+    throw "Unsupported Windows image profile '$WindowsProfile'."
 }
 
 # -----------------------------------------------------------------------------
