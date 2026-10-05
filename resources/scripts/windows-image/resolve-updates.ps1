@@ -2428,15 +2428,63 @@ function Resolve-Windows10Package {
         [ValidateSet('SSU', 'LCU')]
         [string]$PackageType,
 
-        [string]$ExpectedKb = ''
+        [string]$ExpectedKb = '',
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ArtifactRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Architecture,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ArtifactoryBaseUrl,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ArtifactoryRepo,
+
+        [string]$ArtifactoryUser = '',
+        [string]$ArtifactoryPassword = '',
+        [string]$ArtifactoryToken = '',
+
+        [string]$JfPath = 'jf.exe',
+
+        [switch]$ForceMicrosoftDownload
     )
+
+    # -------------------------------------------------------------------------
+    # Workspace update directory.
+    #
+    # All resolved MSUs are intentionally kept flat:
+    #
+    #   download\updates\
+    #       windows10....msu
+    #
+    # Artifactory remains hierarchical.
+    # -------------------------------------------------------------------------
+
+    $updatesDir = Join-Path $WorkRoot 'download\updates'
+
+    if (-not (Test-Path -LiteralPath $updatesDir)) {
+        New-Item -ItemType Directory -Path $updatesDir -Force | Out-Null
+    }
+
+    # -------------------------------------------------------------------------
+    # Resolve the authoritative Catalog package set.
+    # -------------------------------------------------------------------------
 
     $resolved = Resolve-CatalogPackageSet `
         -Query $Query `
         -ExpectedType $PackageType `
         -ExpectedKb $ExpectedKb
 
-    $targetKb = $resolved.KB
+    if (-not $resolved) {
+        throw "Windows 10 Catalog resolution returned no result for $PackageType."
+    }
+
+    $targetKb = [string]$resolved.KB
 
     if (
         -not [string]::IsNullOrWhiteSpace($ExpectedKb) -and
@@ -2451,45 +2499,64 @@ UpdateID: $($resolved.UpdateId)
 "@
     }
 
-    # For Win10, retain the first MSU returned for the selected row.
-    $package = @(
+    # -------------------------------------------------------------------------
+    # Windows 10 normally returns a single applicable MSU.
+    #
+    # Keep only MSU files.
+    # -------------------------------------------------------------------------
+
+    $packages = @(
         $resolved.Packages |
             Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_.FileName) -and
                 $_.FileName -match '(?i)\.msu$'
             }
     )
 
-    if ($package.Count -eq 0) {
+    if ($packages.Count -eq 0) {
         throw "No MSU was returned for Windows 10 $PackageType $targetKb."
     }
 
-    if ($package.Count -gt 1) {
+    # -------------------------------------------------------------------------
+    # If multiple MSUs are returned, select the one matching the target KB.
+    # -------------------------------------------------------------------------
+
+    if ($packages.Count -gt 1) {
+
         $matching = @(
-            $package | Where-Object {
-                $_.KB -eq $targetKb
-            }
+            $packages |
+                Where-Object {
+                    [string]$_.KB -eq $targetKb
+                }
         )
 
         if ($matching.Count -eq 1) {
-            $package = $matching
+            $packages = $matching
         }
         else {
+            $packageList = (
+                $packages |
+                    ForEach-Object {
+                        "  $($_.FileName)"
+                    }
+            ) -join "`r`n"
+
             throw @"
-            Multiple MSUs were returned for Windows 10 $PackageType.
+Multiple MSUs were returned for Windows 10 $PackageType.
 
-            KB: $targetKb
+KB: $targetKb
 
-            Packages:
-            $(
-                ($package | ForEach-Object {
-                    "  $($_.FileName)"
-                }) -join "`r`n"
-            )
-            "@
+Packages:
+$packageList
+"@
         }
     }
 
-    $selected = $package[0]
+    $selected = $packages[0]
+
+    # -------------------------------------------------------------------------
+    # Build the package object expected by Resolve-PackageFile.
+    # -------------------------------------------------------------------------
 
     $packageForResolution = [pscustomobject]@{
         KB       = [string]$selected.KB
@@ -2505,12 +2572,29 @@ UpdateID: $($resolved.UpdateId)
         }
     }
 
+    # If the Catalog package did not expose KB, use the selected target KB.
+    if ([string]::IsNullOrWhiteSpace($packageForResolution.KB)) {
+        $packageForResolution.KB = $targetKb
+    }
+
+    # -------------------------------------------------------------------------
+    # Resolve/download/cache the package.
+    #
+    # Local workspace:
+    #
+    #   download\updates\<file>.msu
+    #
+    # Artifactory:
+    #
+    #   <ArtifactRoot>/<Architecture>/<PackageType>/<KB>/<file>.msu
+    # -------------------------------------------------------------------------
+
     $resolvedFile = Resolve-PackageFile `
         -Package $packageForResolution `
-        -UpdatesDir $UpdatesRoot `
+        -UpdatesDir $updatesDir `
         -ArtifactRoot $ArtifactRoot `
         -Architecture $Architecture `
-        -ArtifactoryBaseUrl $ArtifactoryRoot `
+        -ArtifactoryBaseUrl $ArtifactoryBaseUrl `
         -ArtifactoryRepo $ArtifactoryRepo `
         -PackageType $PackageType `
         -ArtifactoryUser $ArtifactoryUser `
@@ -2519,21 +2603,51 @@ UpdateID: $($resolved.UpdateId)
         -JfPath $JfPath `
         -ForceMicrosoftDownload:$ForceMicrosoftDownload
 
+    if (-not $resolvedFile) {
+        throw "Failed to resolve Windows 10 $PackageType package '$targetKb'."
+    }
+
+    # -------------------------------------------------------------------------
+    # Return normalized Windows 10 package information.
+    # -------------------------------------------------------------------------
+
     return [pscustomobject]@{
         Type         = $PackageType
         KB           = $targetKb
-        Build        = $resolved.Build
-        Date         = $resolved.Date
-        Title        = $resolved.Title
-        UpdateId     = $resolved.UpdateId
-        FileName     = $resolvedFile.FileName
-        Url          = $resolvedFile.Url
-        ArtifactPath = $resolvedFile.ArtifactPath
-        LocalPath    = $resolvedFile.LocalPath
-        Sha256       = $resolvedFile.Sha256
-        Source       = $resolvedFile.Source
+        Build        = if (
+            $resolved.PSObject.Properties.Name -contains 'Build'
+        ) {
+            [string]$resolved.Build
+        }
+        else {
+            ''
+        }
+        Date         = if (
+            $resolved.PSObject.Properties.Name -contains 'Date'
+        ) {
+            [string]$resolved.Date
+        }
+        else {
+            ''
+        }
+        Title        = if (
+            $resolved.PSObject.Properties.Name -contains 'Title'
+        ) {
+            [string]$resolved.Title
+        }
+        else {
+            ''
+        }
+        UpdateId     = [string]$resolved.UpdateId
+        FileName     = [string]$resolvedFile.FileName
+        Url          = [string]$resolvedFile.Url
+        ArtifactPath = [string]$resolvedFile.ArtifactPath
+        LocalPath    = [string]$resolvedFile.LocalPath
+        Sha256       = [string]$resolvedFile.Sha256
+        Source       = [string]$resolvedFile.Source
     }
 }
+
 
 # -----------------------------------------------------------------------------
 # JSON output
