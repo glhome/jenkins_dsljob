@@ -3154,12 +3154,24 @@ $manifest = [ordered]@{
     product       = [string]$Product
     release       = [string]$Release
     architecture = [string]$Architecture
+    windowsVersion = [string]$imageProfile.WindowsVersion
+    isoPrefix      = [string]$IsoPrefix
 
     # Windows servicing baseline.
     windowsBuild  = [string]$imageProfile.Build
 
     # Resulting authoritative LCU build.
     build         = [string]$authoritativeBuild
+    # Compatibility fields consumed by Jenkins image pipeline.
+    kb              = [string]$targetMsu.KB
+    releaseDate     = [string]$resolvedLcu.Date
+    updateId        = [string]$resolvedLcu.UpdateId
+    fileName        = [string]$targetMsu.FileName
+    sha256          = [string]$targetMsu.Sha256
+    artifactoryPath = [string]$targetMsu.ArtifactPath
+    artifactoryUrl  = Get-ArtifactoryUrl -RelativePath $targetMsu.ArtifactPath
+    source          = [string]$targetMsu.Source
+    ssuIncluded     = ($null -ne $resolvedSsu)
 
     ssu           = $normalizedSsu
 
