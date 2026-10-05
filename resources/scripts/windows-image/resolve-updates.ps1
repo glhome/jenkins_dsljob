@@ -2686,12 +2686,14 @@ function Write-ResolvedUpdatesJson {
     return $outputPath
 }
 
+
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 
 $resolvedLcu = $null
 $resolvedSsu = $null
+$authoritativeBuild = ''
 
 # -----------------------------------------------------------------------------
 # Windows 11 24H2
@@ -2709,7 +2711,22 @@ if ($WindowsProfile -eq 'windows11-24h2') {
     Write-Host '============================================================'
 
     $resolvedLcu = Resolve-Windows11Lcu `
-        -Query $CatalogQuery
+        -Query $CatalogQuery `
+        -WorkRoot $WorkRoot `
+        -ArtifactRoot $ArtifactRoot `
+        -Architecture $Architecture `
+        -ArtifactoryBaseUrl $ArtifactoryBaseUrl `
+        -ArtifactoryRepo $ArtifactoryRepo `
+        -ArtifactoryUser $ArtifactoryUser `
+        -ArtifactoryPassword $ArtifactoryPassword `
+        -ArtifactoryToken $ArtifactoryToken `
+        -JfPath $JfPath `
+        -ForceMicrosoftDownload:$ForceMicrosoftDownload `
+        -ResolveOnly:$ResolveOnly
+
+    if ($null -eq $resolvedLcu) {
+        throw 'Windows 11 LCU resolution returned no result.'
+    }
 
     if ($null -eq $resolvedLcu.Msu) {
         throw 'Windows 11 LCU target package was not resolved.'
@@ -2726,27 +2743,25 @@ if ($WindowsProfile -eq 'windows11-24h2') {
     # -------------------------------------------------------------------------
     # Important target-package validation.
     #
-    # This catches the exact class of problem that previously occurred:
-    #
-    #   KB5129195
-    #   UpdateID = 6523...
-    #   FileName = KB5043080
-    #
-    # The checkpoint is allowed elsewhere in Packages, but Msu MUST be target.
+    # Msu MUST be the target package.
+    # Checkpoint packages are allowed only in Packages[].
     # -------------------------------------------------------------------------
 
-    $expectedTargetKb = $resolvedLcu.KB
+    $expectedTargetKb = [string]$resolvedLcu.KB
+    $resolvedTargetKb = [string]$resolvedLcu.Msu.KB
 
-    if ($resolvedLcu.Msu.KB -ne $expectedTargetKb) {
+    if ($resolvedTargetKb -ne $expectedTargetKb) {
         throw @"
 Windows 11 target LCU mismatch.
 
 Expected target KB: $expectedTargetKb
-Resolved target KB: $($resolvedLcu.Msu.KB)
+Resolved target KB: $resolvedTargetKb
 FileName:            $($resolvedLcu.Msu.FileName)
 UpdateID:            $($resolvedLcu.UpdateId)
 "@
     }
+
+    $authoritativeBuild = [string]$resolvedLcu.Build
 
     Write-Host ''
     Write-Host 'Windows 11 LCU target resolved successfully:'
@@ -2758,75 +2773,9 @@ UpdateID:            $($resolvedLcu.UpdateId)
 
     Write-Host 'Windows 11 LCU package set:'
 
-    foreach ($package in $resolvedLcu.Packages) {
+    foreach ($package in @($resolvedLcu.Packages)) {
         Write-Host "  [$($package.Type)] $($package.KB) $($package.FileName)"
     }
-
-    # -------------------------------------------------------------------------
-    # Manifest
-    #
-    # Msu remains the target package for existing consumers.
-    #
-    # Packages contains target + checkpoint package(s).
-    # -------------------------------------------------------------------------
-
-    $manifest = [ordered]@{
-        schemaVersion = '1.4'
-
-        profile       = $Profile
-        product       = $Product
-        release       = $Release
-        architecture = $Architecture
-
-        build         = $resolvedLcu.Build
-
-        lcu           = [ordered]@{
-            kb         = $resolvedLcu.KB
-            build      = $resolvedLcu.Build
-            date       = $resolvedLcu.Date
-            title      = $resolvedLcu.Title
-            updateId   = $resolvedLcu.UpdateId
-
-            # Compatibility target package.
-            msu        = [ordered]@{
-                kb           = $resolvedLcu.Msu.KB
-                fileName     = $resolvedLcu.Msu.FileName
-                url          = $resolvedLcu.Msu.Url
-                artifactPath = $resolvedLcu.Msu.ArtifactPath
-                localPath    = $resolvedLcu.Msu.LocalPath
-                sha256       = $resolvedLcu.Msu.Sha256
-                source       = $resolvedLcu.Msu.Source
-            }
-
-            # Complete checkpoint/target package set.
-            packages   = @(
-                $resolvedLcu.Packages | ForEach-Object {
-                    [ordered]@{
-                        type         = $_.Type
-                        kb           = $_.KB
-                        fileName     = $_.FileName
-                        url          = $_.Url
-                        artifactPath = $_.ArtifactPath
-                        localPath    = $_.LocalPath
-                        sha256       = $_.Sha256
-                        source       = $_.Source
-                        updateId     = $_.UpdateId
-                    }
-                }
-            )
-
-            ssuFileName = $resolvedLcu.SsuFileName
-        }
-
-        baseIso      = [ordered]@{
-            artifact = $BaseIsoArtifact
-            sha256   = $BaseIsoSha256
-        }
-
-        artifactRoot = $ArtifactRoot
-    }
-
-    Write-ResolvedUpdatesJson -Manifest $manifest | Out-Null
 }
 
 # -----------------------------------------------------------------------------
@@ -2878,7 +2827,17 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
     $resolvedSsu = Resolve-Windows10Package `
         -Query $ssuQuery `
         -PackageType SSU `
-        -ExpectedKb $ssuKb
+        -ExpectedKb $ssuKb `
+        -WorkRoot $WorkRoot `
+        -ArtifactRoot $ArtifactRoot `
+        -Architecture $Architecture `
+        -ArtifactoryBaseUrl $ArtifactoryBaseUrl `
+        -ArtifactoryRepo $ArtifactoryRepo `
+        -ArtifactoryUser $ArtifactoryUser `
+        -ArtifactoryPassword $ArtifactoryPassword `
+        -ArtifactoryToken $ArtifactoryToken `
+        -JfPath $JfPath `
+        -ForceMicrosoftDownload:$ForceMicrosoftDownload
 
     Write-Host ''
     Write-Host 'Resolving LCU...'
@@ -2886,15 +2845,25 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
     $resolvedLcu = Resolve-Windows10Package `
         -Query $lcuQuery `
         -PackageType LCU `
-        -ExpectedKb $lcuKb
+        -ExpectedKb $lcuKb `
+        -WorkRoot $WorkRoot `
+        -ArtifactRoot $ArtifactRoot `
+        -Architecture $Architecture `
+        -ArtifactoryBaseUrl $ArtifactoryBaseUrl `
+        -ArtifactoryRepo $ArtifactoryRepo `
+        -ArtifactoryUser $ArtifactoryUser `
+        -ArtifactoryPassword $ArtifactoryPassword `
+        -ArtifactoryToken $ArtifactoryToken `
+        -JfPath $JfPath `
+        -ForceMicrosoftDownload:$ForceMicrosoftDownload
 
     # -------------------------------------------------------------------------
-    # Extract authoritative build from LCU CAB/MUM if possible.
+    # Extract authoritative build from the LCU if possible.
     #
-    # Catalog build may be empty on Windows 10 rows.
+    # Windows 10 Catalog rows may not provide a usable build.
     # -------------------------------------------------------------------------
 
-    $authoritativeBuild = $resolvedLcu.Build
+    $authoritativeBuild = [string]$resolvedLcu.Build
 
     if (
         -not $ResolveOnly -and
@@ -2909,6 +2878,7 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
             '7zz.exe',
             'C:\Program Files\7-Zip\7z.exe'
         )) {
+
             if (
                 $candidate -match '^[^\\]+$' -and
                 (Get-Command $candidate -ErrorAction SilentlyContinue)
@@ -2988,53 +2958,6 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
             }
         }
     }
-
-    $manifest = [ordered]@{
-        schemaVersion = '1.4'
-
-        profile       = $WindowsProfile
-        product       = $Product
-        release       = $Release
-        architecture = $Architecture
-
-        build         = $authoritativeBuild
-
-        ssu           = [ordered]@{
-            kb           = $resolvedSsu.KB
-            fileName     = $resolvedSsu.FileName
-            url          = $resolvedSsu.Url
-            artifactPath = $resolvedSsu.ArtifactPath
-            localPath    = $resolvedSsu.LocalPath
-            sha256       = $resolvedSsu.Sha256
-            source       = $resolvedSsu.Source
-            updateId     = $resolvedSsu.UpdateId
-            date         = $resolvedSsu.Date
-            title        = $resolvedSsu.Title
-        }
-
-        lcu           = [ordered]@{
-            kb           = $resolvedLcu.KB
-            fileName     = $resolvedLcu.FileName
-            url           = $resolvedLcu.Url
-            artifactPath = $resolvedLcu.ArtifactPath
-            localPath    = $resolvedLcu.LocalPath
-            sha256       = $resolvedLcu.Sha256
-            source       = $resolvedLcu.Source
-            updateId     = $resolvedLcu.UpdateId
-            date         = $resolvedLcu.Date
-            title        = $resolvedLcu.Title
-            build        = $authoritativeBuild
-        }
-
-        baseIso       = [ordered]@{
-            artifact = $BaseIsoArtifact
-            sha256   = $BaseIsoSha256
-        }
-
-        artifactRoot  = $ArtifactRoot
-    }
-
-    Write-ResolvedUpdatesJson -Manifest $manifest | Out-Null
 }
 
 else {
@@ -3042,40 +2965,210 @@ else {
 }
 
 # -----------------------------------------------------------------------------
-# Final summary
+# Common manifest construction
+#
+# IMPORTANT:
+# This is deliberately OUTSIDE the Windows 10/Windows 11 branches.
+#
+# Both profiles now produce the same JSON contract.
 # -----------------------------------------------------------------------------
 
-Write-Host ''
-Write-Host '============================================================'
-Write-Host ' Resolution complete'
-Write-Host '============================================================'
+if ($null -eq $resolvedLcu) {
+    throw "LCU resolution did not produce a result."
+}
 
-if ($null -ne $resolvedLcu) {
-    Write-Host "LCU KB:        $($resolvedLcu.KB)"
+if ([string]::IsNullOrWhiteSpace($authoritativeBuild)) {
+    throw "Unable to determine the authoritative Windows/LCU build."
+}
 
-    if (-not [string]::IsNullOrWhiteSpace($resolvedLcu.Build)) {
-        Write-Host "LCU Build:     $($resolvedLcu.Build)"
-    }
+# -----------------------------------------------------------------------------
+# Normalize target LCU package.
+#
+# Windows 11:
+#   $resolvedLcu.Msu
+#
+# Windows 10:
+#   $resolvedLcu itself is the resolved package.
+# -----------------------------------------------------------------------------
 
-    Write-Host "LCU UpdateID:  $($resolvedLcu.UpdateId)"
+$targetMsu = $null
 
-    if ($null -ne $resolvedLcu.Packages) {
-        Write-Host "LCU Packages:  $(@($resolvedLcu.Packages).Count)"
+if ($null -ne $resolvedLcu.Msu) {
 
-        foreach ($package in $resolvedLcu.Packages) {
-            Write-Host "  [$($package.Type)] $($package.KB) $($package.FileName)"
+    # Windows 11 structure.
+    $targetMsu = $resolvedLcu.Msu
+}
+else {
+
+    # Windows 10 structure.
+    $targetMsu = $resolvedLcu
+}
+
+if ($null -eq $targetMsu) {
+    throw 'Unable to determine target LCU MSU.'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]$targetMsu.FileName)) {
+    throw 'Target LCU MSU has no filename.'
+}
+
+# -----------------------------------------------------------------------------
+# Normalize package list.
+#
+# Windows 11:
+#   checkpoint + target
+#
+# Windows 10:
+#   target only
+# -----------------------------------------------------------------------------
+
+$normalizedPackages = @()
+
+if ($null -ne $resolvedLcu.Packages) {
+
+    foreach ($package in @($resolvedLcu.Packages)) {
+
+        $normalizedPackages += [ordered]@{
+            type         = [string]$package.Type
+            kb           = [string]$package.KB
+            fileName     = [string]$package.FileName
+            url          = [string]$package.Url
+            artifactPath = [string]$package.ArtifactPath
+            localPath    = [string]$package.LocalPath
+            sha256       = [string]$package.Sha256
+            source       = [string]$package.Source
+
+            if ($package.PSObject.Properties.Name -contains 'UpdateId') {
+                updateId = [string]$package.UpdateId
+            }
         }
     }
-    else {
-        Write-Host "LCU File:      $($resolvedLcu.FileName)"
+}
+else {
+
+    # Windows 10 currently resolves one package at a time.
+    # Normalize it into the same packages[] contract.
+    $normalizedPackages += [ordered]@{
+        type         = 'target'
+        kb           = [string]$targetMsu.KB
+        fileName     = [string]$targetMsu.FileName
+        url          = [string]$targetMsu.Url
+        artifactPath = [string]$targetMsu.ArtifactPath
+        localPath    = [string]$targetMsu.LocalPath
+        sha256       = [string]$targetMsu.Sha256
+        source       = [string]$targetMsu.Source
+        updateId     = [string]$targetMsu.UpdateId
     }
 }
 
-if ($null -ne $resolvedSsu) {
-    Write-Host "SSU KB:        $($resolvedSsu.KB)"
-    Write-Host "SSU File:      $($resolvedSsu.FileName)"
+# -----------------------------------------------------------------------------
+# Normalize target MSU.
+# -----------------------------------------------------------------------------
+
+$normalizedMsu = [ordered]@{
+    type         = 'target'
+    kb           = [string]$targetMsu.KB
+    fileName     = [string]$targetMsu.FileName
+    url          = [string]$targetMsu.Url
+    artifactPath = [string]$targetMsu.ArtifactPath
+    localPath    = [string]$targetMsu.LocalPath
+    sha256       = [string]$targetMsu.Sha256
+    source       = [string]$targetMsu.Source
 }
 
+# -----------------------------------------------------------------------------
+# Normalize SSU.
+#
+# Windows 11:
+#   null
+#
+# Windows 10:
+#   resolved SSU object
+# -----------------------------------------------------------------------------
+
+$normalizedSsu = $null
+
+if ($null -ne $resolvedSsu) {
+
+    $normalizedSsu = [ordered]@{
+        type         = 'SSU'
+        kb           = [string]$resolvedSsu.KB
+        fileName     = [string]$resolvedSsu.FileName
+        url          = [string]$resolvedSsu.Url
+        artifactPath = [string]$resolvedSsu.ArtifactPath
+        localPath    = [string]$resolvedSsu.LocalPath
+        sha256       = [string]$resolvedSsu.Sha256
+        source       = [string]$resolvedSsu.Source
+        updateId     = [string]$resolvedSsu.UpdateId
+        date         = [string]$resolvedSsu.Date
+        title        = [string]$resolvedSsu.Title
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Canonical manifest.
+# -----------------------------------------------------------------------------
+
+$manifest = [ordered]@{
+    schemaVersion = '1.4'
+
+    profile       = [string]$WindowsProfile
+    product       = [string]$Product
+    release       = [string]$Release
+    architecture = [string]$Architecture
+
+    # Windows servicing baseline.
+    windowsBuild  = [string]$imageProfile.Build
+
+    # Resulting authoritative LCU build.
+    build         = [string]$authoritativeBuild
+
+    ssu           = $normalizedSsu
+
+    lcu           = [ordered]@{
+        type      = 'LCU'
+        kb        = [string]$targetMsu.KB
+        build     = [string]$authoritativeBuild
+        date      = [string]$resolvedLcu.Date
+        title     = [string]$resolvedLcu.Title
+        updateId  = [string]$resolvedLcu.UpdateId
+
+        # Target MSU.
+        msu       = $normalizedMsu
+
+        # Complete servicing package set.
+        packages  = @($normalizedPackages)
+    }
+
+    baseIso       = [ordered]@{
+        artifact = $BaseIsoArtifact
+        sha256   = $BaseIsoSha256
+    }
+
+    artifactRoot  = $ArtifactRoot
+}
+
+# -----------------------------------------------------------------------------
+# Write ONE canonical JSON file for both profiles.
+# -----------------------------------------------------------------------------
+
+Write-ResolvedUpdatesJson -Manifest $manifest | Out-Null
+
 Write-Host ''
-Write-Host "Output:        $(Join-Path $DownloadRoot 'resolved-updates.json')"
 Write-Host '============================================================'
+Write-Host ' Resolved Updates Manifest'
+Write-Host '============================================================'
+Write-Host "Profile       : $($manifest.profile)"
+Write-Host "Product       : $($manifest.product)"
+Write-Host "Release       : $($manifest.release)"
+Write-Host "Architecture  : $($manifest.architecture)"
+Write-Host "Windows Build : $($manifest.windowsBuild)"
+Write-Host "LCU KB        : $($manifest.lcu.kb)"
+Write-Host "LCU Build     : $($manifest.lcu.build)"
+Write-Host "LCU UpdateID  : $($manifest.lcu.updateId)"
+Write-Host "LCU Packages  : $(@($manifest.lcu.packages).Count)"
+Write-Host "SSU           : $(if ($null -eq $manifest.ssu) { 'none' } else { $manifest.ssu.kb })"
+Write-Host "Target MSU    : $($manifest.lcu.msu.fileName)"
+Write-Host "Target SHA256 : $($manifest.lcu.msu.sha256)"
+Write-Host '============================================================'
+Write-Host ''
