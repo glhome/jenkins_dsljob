@@ -272,14 +272,63 @@ if (
     }
 }
 else {
-    $lcuPath = Verify-Package `
-        -Package $manifest `
-        -Label 'LCU'
+    if (-not $manifest.lcu) {
+        throw 'Windows 11 manifest has no lcu object.'
+    }
+
+    if (
+        -not $manifest.lcu.packages -or
+        @($manifest.lcu.packages).Count -eq 0
+    ) {
+        throw 'Windows 11 manifest has no LCU package set.'
+    }
+
+    # Windows 11 checkpoint cumulative updates MUST be installed
+    # before the target cumulative update.
+    $checkpointPackages = @(
+        $manifest.lcu.packages |
+            Where-Object {
+                ([string]$_.type).ToLowerInvariant() -eq 'checkpoint'
+            }
+    )
+
+    $targetPackages = @(
+        $manifest.lcu.packages |
+            Where-Object {
+                ([string]$_.type).ToLowerInvariant() -eq 'target'
+            }
+    )
+
+    if ($targetPackages.Count -ne 1) {
+        throw (
+            "Windows 11 manifest must contain exactly one target package. " +
+            "Found $($targetPackages.Count)."
+        )
+    }
+
+    foreach ($package in $checkpointPackages) {
+        $path = Verify-Package `
+            -Package $package `
+            -Label "Checkpoint $($package.kb)"
+
+        $sequence += [pscustomobject]@{
+            Type = 'checkpoint'
+            KB = $package.kb
+            Path = $path
+            ExpectedBuild = ''
+        }
+    }
+
+    $targetPackage = $targetPackages[0]
+
+    $targetPath = Verify-Package `
+        -Package $targetPackage `
+        -Label "Target $($targetPackage.kb)"
 
     $sequence += [pscustomobject]@{
-        Type = 'LCU'
-        KB = $manifest.kb
-        Path = $lcuPath
+        Type = 'target'
+        KB = $targetPackage.kb
+        Path = $targetPath
         ExpectedBuild = $manifest.build
     }
 }
@@ -361,17 +410,49 @@ try {
 
         $packageText = $packageQuery -join "`n"
 
-        if (
-            $packageText -notmatch
-            [regex]::Escape($package.KB)
-        ) {
-            throw (
-                "DISM package verification failed. " +
-                "$($package.KB) is not visible in the mounted image."
-            )
-        }
+        if ($package.Type -eq 'target') {
 
-        Write-Host "$($package.KB) is present in the mounted image."
+    $expectedBuild = [string]$package.ExpectedBuild
+
+    if (
+        [string]::IsNullOrWhiteSpace($expectedBuild)
+    ) {
+        throw (
+            "Target package $($package.KB) has no expected build."
+        )
+    }
+
+    if (
+        $packageText -notmatch
+        [regex]::Escape($expectedBuild)
+    ) {
+        throw @"
+DISM package verification failed.
+
+Target KB:
+  $($package.KB)
+
+Expected image/package build:
+  $expectedBuild
+
+The target package was accepted by DISM, but the expected
+build was not found in the mounted image package list.
+"@
+    }
+
+    Write-Host (
+        "Target $($package.KB) is present at build " +
+        "$expectedBuild."
+    )
+}
+else {
+    # For checkpoint packages, successful DISM /Add-Package is
+    # sufficient here. The package identity is not required to
+    # contain the literal KB string.
+    Write-Host (
+        "Checkpoint $($package.KB) accepted by DISM."
+    )
+}
     }
 
     # -----------------------------------------------------------------------
