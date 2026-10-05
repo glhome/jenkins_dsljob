@@ -2993,7 +2993,12 @@ if ([string]::IsNullOrWhiteSpace($authoritativeBuild)) {
 
 $targetMsu = $null
 
-if ($null -ne $resolvedLcu.Msu) {
+$hasMsuProperty = (
+    $null -ne $resolvedLcu -and
+    $resolvedLcu.PSObject.Properties.Name -contains 'Msu'
+)
+
+if ($hasMsuProperty -and $null -ne $resolvedLcu.Msu) {
 
     # Windows 11 structure.
     $targetMsu = $resolvedLcu.Msu
@@ -3012,6 +3017,7 @@ if ([string]::IsNullOrWhiteSpace([string]$targetMsu.FileName)) {
     throw 'Target LCU MSU has no filename.'
 }
 
+
 # -----------------------------------------------------------------------------
 # Normalize package list.
 #
@@ -3028,7 +3034,8 @@ if ($null -ne $resolvedLcu.Packages) {
 
     foreach ($package in @($resolvedLcu.Packages)) {
 
-        $normalizedPackages += [ordered]@{
+        # Build the package object first.
+        $normalizedPackage = [ordered]@{
             type         = [string]$package.Type
             kb           = [string]$package.KB
             fileName     = [string]$package.FileName
@@ -3037,11 +3044,14 @@ if ($null -ne $resolvedLcu.Packages) {
             localPath    = [string]$package.LocalPath
             sha256       = [string]$package.Sha256
             source       = [string]$package.Source
-
-            if ($package.PSObject.Properties.Name -contains 'UpdateId') {
-                updateId = [string]$package.UpdateId
-            }
         }
+
+        # UpdateId is optional for older package objects.
+        if ($package.PSObject.Properties.Name -contains 'UpdateId') {
+            $normalizedPackage['updateId'] = [string]$package.UpdateId
+        }
+
+        $normalizedPackages += $normalizedPackage
     }
 }
 else {
@@ -3060,6 +3070,7 @@ else {
         updateId     = [string]$targetMsu.UpdateId
     }
 }
+
 
 # -----------------------------------------------------------------------------
 # Normalize target MSU.
