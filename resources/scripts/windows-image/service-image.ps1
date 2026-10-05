@@ -283,19 +283,23 @@ else {
         throw 'Windows 11 manifest has no LCU package set.'
     }
 
-    # Windows 11 checkpoint cumulative updates MUST be installed
-    # before the target cumulative update.
-    $checkpointPackages = @(
-        $manifest.lcu.packages |
+    # The resolver determines the prerequisite/checkpoint set from the
+    # target LCU's Microsoft Update Catalog UpdateID.
+    #
+    # All resolved packages must already exist in download\updates.
+    $allPackages = @($manifest.lcu.packages)
+
+    $targetPackages = @(
+        $allPackages |
             Where-Object {
-                ([string]$_.type).ToLowerInvariant() -eq 'checkpoint'
+                ([string]$_.type).ToLowerInvariant() -eq 'target'
             }
     )
 
-    $targetPackages = @(
-        $manifest.lcu.packages |
+    $checkpointPackages = @(
+        $allPackages |
             Where-Object {
-                ([string]$_.type).ToLowerInvariant() -eq 'target'
+                ([string]$_.type).ToLowerInvariant() -eq 'checkpoint'
             }
     )
 
@@ -306,30 +310,48 @@ else {
         )
     }
 
-    foreach ($package in $checkpointPackages) {
-        $path = Verify-Package `
+    # Verify all packages before mounting the WIM.
+    foreach ($package in $allPackages) {
+        [void](Verify-Package `
             -Package $package `
-            -Label "Checkpoint $($package.kb)"
-
-        $sequence += [pscustomobject]@{
-            Type = 'checkpoint'
-            KB = $package.kb
-            Path = $path
-            ExpectedBuild = ''
-        }
+            -Label "$($package.type) $($package.kb)")
     }
 
     $targetPackage = $targetPackages[0]
 
-    $targetPath = Verify-Package `
-        -Package $targetPackage `
-        -Label "Target $($targetPackage.kb)"
+    Write-Host ''
+    Write-Host 'Windows 11 servicing package set:'
+    Write-Host "  Target:"
+    Write-Host "    $($targetPackage.kb)"
+    Write-Host "    $($targetPackage.fileName)"
+
+    if ($checkpointPackages.Count -gt 0) {
+        Write-Host '  Checkpoint / prerequisite package(s):'
+
+        foreach ($package in $checkpointPackages) {
+            Write-Host "    $($package.kb)"
+            Write-Host "    $($package.fileName)"
+        }
+    }
+    else {
+        Write-Host '  Checkpoint / prerequisite package(s): none'
+    }
+
+    # Windows 11 24H2 checkpoint servicing:
+    #
+    # Do NOT apply checkpoint MSUs individually.
+    # Keep them beside the target MSU in download\updates and invoke DISM
+    # against the target MSU. DISM discovers and applies the applicable
+    # prerequisite checkpoint package(s).
+    $targetPath = Join-Path `
+        $UpdatesDir `
+        $targetPackage.fileName
 
     $sequence += [pscustomobject]@{
-        Type = 'target'
-        KB = $targetPackage.kb
-        Path = $targetPath
-        ExpectedBuild = $manifest.build
+        Type          = 'LCU'
+        KB            = [string]$targetPackage.kb
+        Path          = $targetPath
+        ExpectedBuild = [string]$manifest.build
     }
 }
 
