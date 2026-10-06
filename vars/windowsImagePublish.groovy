@@ -33,8 +33,35 @@ if (\$LASTEXITCODE -ne 0) { throw 'Artifactory connection failed.' }
 \$isoArtifact='${artifactoryRepo}/${isoArtifact}'; \$shaArtifact='${artifactoryRepo}/${shaArtifact}'; \$manifestArtifact='${artifactoryRepo}/${manifestArtifact}'
 Write-Host "Publishing immutable patched Windows ISO..."
 foreach (\$artifact in @(\$isoArtifact,\$shaArtifact,\$manifestArtifact)) {
-    & jf rt s --server-id=local-artifactory --count=1 "\$artifact" 2>&1 | Out-Null
-    if (\$LASTEXITCODE -eq 0) { throw "Immutable artifact already exists: \$artifact" }
+
+    Write-Host "Checking immutable artifact: \$artifact"
+
+    & jf rt s `
+        --server-id=local-artifactory `
+        --count `
+        --fail-no-op `
+        "\$artifact" `
+        2> \$null
+
+    \$searchExitCode = \$LASTEXITCODE
+
+    switch (\$searchExitCode) {
+
+        0 {
+            throw "Immutable artifact already exists: \$artifact"
+        }
+
+        2 {
+            Write-Host "Artifact does not exist; safe to publish: \$artifact"
+        }
+
+        default {
+            throw (
+                "Artifactory immutable check failed for " +
+                "\$artifact with JFrog exit code \$searchExitCode."
+            )
+        }
+    }
 }
 & jf rt upload --server-id=local-artifactory --flat=true --detailed-summary "\$iso" "\$isoArtifact" 2>&1 | ForEach-Object { Write-Host \$_ }
 if (\$LASTEXITCODE -ne 0) { throw "ISO upload failed with exit code \${LASTEXITCODE}" }
