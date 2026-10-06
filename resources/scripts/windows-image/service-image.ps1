@@ -237,38 +237,42 @@ Actual:
 
 $sequence = @()
 
-if (
-    $manifest.profile -eq 'windows10-21h2' -and
-    $manifest.ssuRequired -eq $true
-) {
+if ($manifest.profile -eq 'windows10-21h2') {
+
     if (-not $manifest.ssu) {
-        throw 'Windows 10 manifest requires an SSU but no ssu object exists.'
+        throw 'Windows 10 manifest has no SSU package.'
+    }
+
+    if (-not $manifest.lcu) {
+        throw 'Windows 10 manifest has no LCU object.'
+    }
+
+    if (-not $manifest.lcu.msu) {
+        throw 'Windows 10 manifest has no LCU MSU.'
     }
 
     $ssuPath = Verify-Package `
         -Package $manifest.ssu `
-        -Label 'SSU'
+        -Label "SSU $($manifest.ssu.kb)"
 
     $sequence += [pscustomobject]@{
-        Type = 'SSU'
-        KB = $manifest.ssu.kb
-        Path = $ssuPath
-        ExpectedBuild = $manifest.ssu.build
+        Type          = 'SSU'
+        KB            = [string]$manifest.ssu.kb
+        Path          = $ssuPath
+        ExpectedBuild = ''
     }
 
-    if (-not $manifest.lcu) {
-        throw 'Windows 10 manifest has no lcu object.'
-    }
+    $lcuPackage = $manifest.lcu.msu
 
     $lcuPath = Verify-Package `
-        -Package $manifest.lcu `
-        -Label 'LCU'
+        -Package $lcuPackage `
+        -Label "LCU $($lcuPackage.kb)"
 
     $sequence += [pscustomobject]@{
-        Type = 'LCU'
-        KB = $manifest.lcu.kb
-        Path = $lcuPath
-        ExpectedBuild = $manifest.lcu.build
+        Type          = 'LCU'
+        KB            = [string]$lcuPackage.kb
+        Path          = $lcuPath
+        ExpectedBuild = [string]$manifest.lcu.build
     }
 }
 else {
