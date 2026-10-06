@@ -1151,51 +1151,51 @@ function Select-TargetMsu {
         [string]$TargetKb
     )
 
+    if ($Packages.Count -eq 0) {
+        throw "No Catalog packages were returned for target $TargetKb."
+    }
+
+    # Catalog row is authoritative when DownloadDialog returned
+    # exactly one package.
+    if ($Packages.Count -eq 1) {
+        return $Packages[0]
+    }
+
+    # Multiple files can occur with Windows 11 checkpoint LCUs.
+    # In that case, use the KB attached to the package when available.
     $target = @(
-        $Packages | Where-Object {
-            $_.FileName -match "(?i)\b$([regex]::Escape($TargetKb))\b"
-        }
+        $Packages |
+            Where-Object {
+                [string]$_.KB -eq $TargetKb
+            }
     )
 
     if ($target.Count -eq 1) {
         return $target[0]
     }
 
-    if ($target.Count -gt 1) {
-        # Prefer an exact KB filename match.
-        $exact = @(
-            $target | Where-Object {
+    # Final fallback for older package objects where KB was not populated.
+    $exact = @(
+        $Packages |
+            Where-Object {
                 (Get-KbFromFileName -FileName $_.FileName) -eq $TargetKb
             }
-        )
+    )
 
-        if ($exact.Count -eq 1) {
-            return $exact[0]
-        }
-
-        throw @"
-Multiple target packages were returned for $TargetKb.
-
-Target KB: $TargetKb
-
-Packages:
-$(
-    ($target | ForEach-Object {
-        "  $($_.FileName)"
-    }) -join "`r`n"
-)
-"@
+    if ($exact.Count -eq 1) {
+        return $exact[0]
     }
 
     throw @"
-The Microsoft Catalog DownloadDialog response did not contain the target MSU.
+Unable to uniquely identify the target MSU.
 
-Target KB: $TargetKb
+Target KB:
+  $TargetKb
 
-Returned packages:
+Catalog returned:
 $(
     ($Packages | ForEach-Object {
-        "  $($_.FileName)"
+        "  KB=$($_.KB) File=$($_.FileName)"
     }) -join "`r`n"
 )
 "@
@@ -1415,49 +1415,106 @@ Build:       $ExpectedBuild
         }
 
         # ---------------------------------------------------------------------
-        # Determine KB from the actual filename.
+        # Catalog-first package identity.
         #
-        # This is important because the DownloadDialog response can contain
-        # both checkpoint and target packages.
+        # One downloadable MSU:
+        #   Catalog row is authoritative for KB/type.
+        #
+        # Multiple downloadable MSUs:
+        #   The selected Catalog row identifies the target KB.
+        #   Filename KB is used only to distinguish target/checkpoint files.
         # ---------------------------------------------------------------------
 
-        $packageKb = Get-KbFromFileName `
-            -FileName $fileName
+        $packageKb = ''
+        $identitySource = 'catalog-row'
 
-        if ([string]::IsNullOrWhiteSpace($packageKb)) {
-            Write-Host "Skipping MSU with no recognizable KB: $fileName"
-            continue
+        if ($urls.Count -eq 1) {
+
+            $packageKb = [string]$selectedRow.KB
+
+            if ([string]::IsNullOrWhiteSpace($packageKb)) {
+                throw (
+                    "Catalog row contains no KB for single-file " +
+                    "$ExpectedType update. File: $fileName"
+                )
+            }
+
+            $packageKb = $packageKb.ToUpperInvariant()
+        }
+        else {
+
+            # Multiple MSUs require package-level disambiguation.
+            # Filename parsing is only a fallback here.
+            $packageKb = Get-KbFromFileName `
+                -FileName $fileName
+
+            if ([string]::IsNullOrWhiteSpace($packageKb)) {
+                throw @"
+    Unable to identify a package returned by Microsoft Update Catalog.
+
+    The selected Catalog UpdateID returned multiple MSUs, but this
+    package has no KB in its filename and no package-level KB metadata
+    was returned.
+
+    UpdateID:
+    $updateId
+
+    File:
+    $fileName
+
+    Do not silently discard this package.
+    "@
+            }
+
+            $packageKb = $packageKb.ToUpperInvariant()
+            $identitySource = 'filename-fallback'
         }
 
-        $packageKb = $packageKb.ToUpperInvariant()
-
         # ---------------------------------------------------------------------
-        # Determine package role.
+        # Package role.
         #
-        # The selected Catalog row identifies the target KB.
-        # Every other MSU returned by the same UpdateID is treated as a
-        # checkpoint/prerequisite package.
+        # SSU:
+        #   The selected Catalog row is the package.
+        #
+        # LCU:
+        #   The selected Catalog row is the target.
+        #   Other MSUs returned by that same UpdateID are checkpoints.
         # ---------------------------------------------------------------------
 
-        $packageType = 'checkpoint'
-
-        if (
-            -not [string]::IsNullOrWhiteSpace($selectedRow.KB) -and
-            $packageKb -eq $selectedRow.KB
-        ) {
+        if ($ExpectedType -eq 'SSU') {
             $packageType = 'target'
+        }
+        else {
+            $packageType = 'checkpoint'
+
+            if (
+                -not [string]::IsNullOrWhiteSpace($selectedRow.KB) -and
+                $packageKb -eq
+                    ([string]$selectedRow.KB).ToUpperInvariant()
+            ) {
+                $packageType = 'target'
+            }
         }
 
         $package = [pscustomobject]@{
-            Type     = $packageType
-            KB       = $packageKb
-            FileName = $fileName
-            Url      = [string]$url
-            UpdateId = $updateId
-            Build    = $selectedRow.Build
-            Date     = $selectedRow.Date
-            Title    = $selectedRow.Title
+            Type           = $packageType
+            KB             = $packageKb
+            FileName       = $fileName
+            Url             = [string]$url
+            UpdateId       = $updateId
+            Build          = $selectedRow.Build
+            Date           = $selectedRow.Date
+            Title          = $selectedRow.Title
+            IdentitySource = $identitySource
         }
+
+        Write-Host ''
+        Write-Host 'Resolved Catalog package:'
+        Write-Host "  Type:           $($package.Type)"
+        Write-Host "  KB:             $($package.KB)"
+        Write-Host "  File:           $($package.FileName)"
+        Write-Host "  UpdateID:       $($package.UpdateId)"
+        Write-Host "  IdentitySource: $($package.IdentitySource)"
 
         # Normal PowerShell array append.
         $packages += $package
@@ -2542,6 +2599,28 @@ UpdateID: $($resolved.UpdateId)
 
     if ($packages.Count -eq 0) {
         throw "No MSU was returned for Windows 10 $PackageType $targetKb."
+    }
+
+    if (
+        $ExpectedType -eq 'SSU' -and
+        $packages.Count -ne 1
+    ) {
+        throw @"
+    Windows 10 SSU Catalog resolution is ambiguous.
+
+    Expected exactly one SSU MSU.
+    Returned: $($packages.Count)
+
+    UpdateID:
+    $updateId
+
+    Packages:
+    $(
+        ($packages | ForEach-Object {
+            "  $($_.KB) $($_.FileName)"
+        }) -join "`r`n"
+    )
+    "@
     }
 
     # -------------------------------------------------------------------------
