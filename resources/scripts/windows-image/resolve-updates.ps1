@@ -3086,36 +3086,37 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
 
                     Write-Host "  MUM count: $($mumFiles.Count)"
 
-                    foreach ($mum in $mumFiles) {
+                                        foreach ($mum in $mumFiles) {
 
-                        # -------------------------------------------------
-                        # Primary source:
-                        # MUM filename package identity.
-                        # -------------------------------------------------
+                        $mumName = [string]$mum.Name
 
-                        $nameMatch = [regex]::Match(
-                            $mum.Name,
-                            $buildRegex
+                        Write-Host "    MUM: $mumName"
+
+                        # -----------------------------------------------------
+                        # Extract the Windows servicing revision from the MUM.
+                        #
+                        # The package may identify itself with another Windows
+                        # 10 servicing baseline, e.g. 19045.7727, while the
+                        # target profile is Windows 10 21H2 / 19044.
+                        #
+                        # We therefore extract ONLY the revision component.
+                        # -----------------------------------------------------
+
+                        $revisionCandidates = @()
+
+                        $nameMatches = [regex]::Matches(
+                            $mumName,
+                            '(?i)(?:10\.0\.)?(19\d{3})\.(\d+)'
                         )
 
-                        if ($nameMatch.Success) {
+                        foreach ($match in $nameMatches) {
 
-                            $candidateBuild =
-                                $nameMatch.Value
-
-                            Write-Host (
-                                "  MUM package build: $candidateBuild " +
-                                "($($mum.Name))"
-                            )
-
-                            $buildCandidates += $candidateBuild
-                            continue
+                            $revisionCandidates += [int]$match.Groups[2].Value
                         }
 
-                        # -------------------------------------------------
-                        # Fallback:
-                        # MUM XML version attribute/content.
-                        # -------------------------------------------------
+                        # -----------------------------------------------------
+                        # Also inspect MUM XML content.
+                        # -----------------------------------------------------
 
                         try {
 
@@ -3124,30 +3125,67 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
                                 -Raw `
                                 -ErrorAction Stop
 
-                            $contentMatch = [regex]::Match(
+                            $contentMatches = [regex]::Matches(
                                 $mumText,
-                                $buildRegex
+                                '(?i)(?:10\.0\.)?(19\d{3})\.(\d+)'
                             )
 
-                            if ($contentMatch.Success) {
+                            foreach ($match in $contentMatches) {
 
-                                $candidateBuild =
-                                    $contentMatch.Value
-
-                                Write-Host (
-                                    "  MUM metadata build: $candidateBuild " +
-                                    "($($mum.Name))"
-                                )
-
-                                $buildCandidates += $candidateBuild
+                                $revisionCandidates += `
+                                    [int]$match.Groups[2].Value
                             }
                         }
                         catch {
+
                             Write-Host (
-                                "  WARNING: Unable to read MUM " +
-                                "$($mum.Name): $($_.Exception.Message)"
+                                "    WARNING: Unable to read MUM " +
+                                "$mumName : $($_.Exception.Message)"
                             )
                         }
+
+                        if ($revisionCandidates.Count -eq 0) {
+
+                            Write-Host `
+                                '    No Windows 10 servicing revision found.'
+
+                            continue
+                        }
+
+                        $revision = (
+                            $revisionCandidates |
+                                Sort-Object -Descending |
+                                Select-Object -First 1
+                        )
+
+                        if ($revision -le 0) {
+                            continue
+                        }
+
+                        # -----------------------------------------------------
+                        # Target profile determines the OS build family.
+                        #
+                        # Windows 10 21H2:
+                        #     profile Build = 19044
+                        #
+                        # Therefore:
+                        #     19044 + 7727
+                        #         => 19044.7727
+                        # -----------------------------------------------------
+
+                        $candidateBuild = (
+                            [string]$ProfileBuild +
+                            '.' +
+                            [string]$revision
+                        )
+
+                        Write-Host `
+                            "    LCU servicing revision: $revision"
+
+                        Write-Host `
+                            "    Target profile build:    $candidateBuild"
+
+                        $buildCandidates += $candidateBuild
                     }
                 }
                 finally {
