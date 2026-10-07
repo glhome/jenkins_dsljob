@@ -134,7 +134,7 @@ if (\$ping.StdErr) {
 }
 
 if (\$ping.ExitCode -ne 0) {
-    throw "Artifactory connection failed. JFrog exit code: \$($ping.ExitCode)"
+    throw "Artifactory connection failed. JFrog exit code: \$ping.ExitCode"
 }
 
 # ============================================================
@@ -182,7 +182,7 @@ foreach (\$artifact in @(
         default {
             throw (
                 "Artifactory immutable check failed for " +
-                "\$artifact with JFrog exit code \$($search.ExitCode)."
+                "\$artifact with JFrog exit code \$search.ExitCode."
             )
         }
     }
@@ -230,7 +230,7 @@ function Publish-JfArtifact {
     if (\$result.ExitCode -ne 0) {
         throw (
             "\$Description upload failed with JFrog exit code " +
-            "\$($result.ExitCode)."
+            "\$result.ExitCode."
         )
     }
 }
