@@ -2925,11 +2925,17 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
     #
     # Use that metadata instead of parsing DISM console output.
     # -------------------------------------------------------------------------
+    Write-Host ''
+    Write-Host 'Windows 10 LCU build inspection state:'
+    Write-Host "  ResolveOnly : $ResolveOnly"
+    Write-Host "  LocalPath   : $($resolvedLcu.LocalPath)"
+    Write-Host "  LocalExists : $(Test-Path -LiteralPath $resolvedLcu.LocalPath -PathType Leaf)"
+    Write-Host "  Build       : $authoritativeBuild"
+    Write-Host ''
 
     $authoritativeBuild = [string]$resolvedLcu.Build
 
     if (
-        -not $ResolveOnly -and
         [string]::IsNullOrWhiteSpace($authoritativeBuild) -and
         -not [string]::IsNullOrWhiteSpace($resolvedLcu.LocalPath) -and
         (Test-Path -LiteralPath $resolvedLcu.LocalPath -PathType Leaf)
