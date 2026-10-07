@@ -1425,8 +1425,35 @@ Build:       $ExpectedBuild
             -FileName $fileName
 
         if ([string]::IsNullOrWhiteSpace($packageKb)) {
-            Write-Host "Skipping MSU with no recognizable KB: $fileName"
-            continue
+            # Windows 10 SSU package filenames commonly do not contain a KB,
+            # for example:
+            #   ssu-19041.3562-x64_....msu
+            #
+            # For a single MSU returned by an SSU Catalog row, the Catalog
+            # row is authoritative for the package KB.
+            $msuUrlCount = @(
+                $urls |
+                    Where-Object {
+                        (Get-UrlFileName -Url ([string]$_)) -match '(?i)\.msu$'
+                    }
+            ).Count
+
+            if (
+                $ExpectedType -eq 'SSU' -and
+                $msuUrlCount -eq 1 -and
+                -not [string]::IsNullOrWhiteSpace([string]$selectedRow.KB)
+            ) {
+                $packageKb = [string]$selectedRow.KB
+
+                Write-Host (
+                    "Using Catalog row KB $packageKb for SSU package " +
+                    "without KB in filename: $fileName"
+                )
+            }
+            else {
+                Write-Host "Skipping MSU with no recognizable KB: $fileName"
+                continue
+            }
         }
 
         $packageKb = $packageKb.ToUpperInvariant()
