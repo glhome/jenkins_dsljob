@@ -3323,7 +3323,12 @@ if ([string]::IsNullOrWhiteSpace([string]$targetMsu.FileName)) {
 
 $normalizedPackages = @()
 
-if ($null -ne $resolvedLcu.Packages) {
+$hasPackagesProperty = (
+    $null -ne $resolvedLcu -and
+    $resolvedLcu.PSObject.Properties.Name -contains 'Packages'
+)
+
+if ($hasPackagesProperty) {
 
     foreach ($package in @($resolvedLcu.Packages)) {
 
@@ -3363,7 +3368,6 @@ else {
         updateId     = [string]$targetMsu.UpdateId
     }
 }
-
 
 # -----------------------------------------------------------------------------
 # Normalize target MSU.
