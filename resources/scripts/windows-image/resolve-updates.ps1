@@ -2914,15 +2914,15 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
     # -------------------------------------------------------------------------
     # Determine authoritative Windows 10 LCU build.
     #
-    # Windows 10 Catalog rows do not reliably expose the full resulting build.
-    # The MSU filename also does not contain the build.
+    # Catalog does not reliably expose the resulting OS build.
+    # The MSU filename does not contain the build.
     #
-    # Therefore:
-    #   1. Extract the CAB(s) from the LCU MSU.
-    #   2. Ask DISM for package metadata for each CAB.
-    #   3. Extract the 19044.xxxx package version.
+    # Extract the CAB from the MSU, then read the package identity with DISM.
+    # Example package identity:
     #
-    # DISM /Get-PackageInfo accepts CAB files, not MSU files.
+    #   Package_for_RollupFix~31bf3856ad364e35~amd64~~19044.7727.1.0
+    #
+    # The profile BuildRegex selects the OS build family (19044.xxxx).
     # -------------------------------------------------------------------------
 
     $authoritativeBuild = [string]$resolvedLcu.Build
@@ -2956,155 +2956,198 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
             }
         }
 
-        if (-not [string]::IsNullOrWhiteSpace($sevenZip)) {
+        if (-not $sevenZip) {
+            throw '7-Zip was not found; cannot inspect the Windows 10 LCU MSU.'
+        }
 
-            $dismExe = "$env:SystemRoot\System32\dism.exe"
+        $dismExe = "$env:SystemRoot\System32\dism.exe"
 
-            if (-not (Test-Path -LiteralPath $dismExe -PathType Leaf)) {
-                throw "DISM executable was not found: $dismExe"
+        if (-not (Test-Path -LiteralPath $dismExe -PathType Leaf)) {
+            throw "DISM executable was not found: $dismExe"
+        }
+
+        $buildRegex = [string](Get-ProfileProperty `
+            -ProfileObject $imageProfile `
+            -Name 'BuildRegex' `
+            -DefaultValue '')
+
+        if ([string]::IsNullOrWhiteSpace($buildRegex)) {
+            $buildRegex = '\d{5}\.\d+'
+        }
+
+        $tempExtract = Join-Path `
+            $DownloadRoot `
+            'win10-lcu-inspect'
+
+        if (Test-Path -LiteralPath $tempExtract) {
+            Remove-Item `
+                -LiteralPath $tempExtract `
+                -Recurse `
+                -Force
+        }
+
+        New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $tempExtract | Out-Null
+
+        try {
+
+            Write-Host ''
+            Write-Host 'Inspecting Windows 10 LCU package metadata:'
+            Write-Host "  MSU: $($resolvedLcu.LocalPath)"
+
+            # Extract CAB(s) from the MSU.
+            & $sevenZip `
+                'x' `
+                $resolvedLcu.LocalPath `
+                "-o$tempExtract" `
+                '-y' `
+                '*.cab' `
+                2>&1 | Out-Null
+
+            $sevenZipExitCode = $LASTEXITCODE
+
+            Write-Host "  7-Zip exit code: $sevenZipExitCode"
+
+            $cabFiles = @(
+                Get-ChildItem `
+                    -LiteralPath $tempExtract `
+                    -Recurse `
+                    -File `
+                    -Filter '*.cab'
+            )
+
+            Write-Host "  Extracted CAB count: $($cabFiles.Count)"
+
+            if ($cabFiles.Count -eq 0) {
+                throw (
+                    "No CAB files were extracted from Windows 10 LCU MSU. " +
+                    "7-Zip exit code: $sevenZipExitCode"
+                )
             }
 
-            $tempExtract = Join-Path `
-                $DownloadRoot `
-                'win10-lcu-inspect'
+            $buildCandidates = @()
 
+            foreach ($cab in $cabFiles) {
+
+                Write-Host ''
+                Write-Host "  Inspecting CAB: $($cab.Name)"
+
+                $dismOutput = @(
+                    & $dismExe `
+                        '/English' `
+                        '/Get-PackageInfo' `
+                        "/PackagePath:$($cab.FullName)" `
+                        2>&1
+                )
+
+                $dismExitCode = $LASTEXITCODE
+
+                Write-Host "  DISM exit code: $dismExitCode"
+
+                if ($dismExitCode -ne 0) {
+                    Write-Host '  DISM /Get-PackageInfo failed.'
+                    continue
+                }
+
+                $dismText = (
+                    $dismOutput |
+                        ForEach-Object { [string]$_ }
+                ) -join "`r`n"
+
+                # -------------------------------------------------------------
+                # Primary source:
+                # Package Identity contains the actual servicing revision.
+                # -------------------------------------------------------------
+
+                $identityMatch = [regex]::Match(
+                    $dismText,
+                    "(?im)^\s*Package Identity\s*:\s*.*?($buildRegex)"
+                )
+
+                if ($identityMatch.Success) {
+
+                    $candidateBuild =
+                        $identityMatch.Groups[1].Value
+
+                    Write-Host "  Package Identity build: $candidateBuild"
+
+                    if (
+                        -not [string]::IsNullOrWhiteSpace($candidateBuild)
+                    ) {
+                        $buildCandidates += $candidateBuild
+                        continue
+                    }
+                }
+
+                # -------------------------------------------------------------
+                # Fallback:
+                # Search explicit DISM Version / Product Version fields.
+                # -------------------------------------------------------------
+
+                $versionMatch = [regex]::Match(
+                    $dismText,
+                    "(?im)^\s*(?:Version|Product Version)\s*:\s*.*?($buildRegex)"
+                )
+
+                if ($versionMatch.Success) {
+
+                    $candidateBuild =
+                        $versionMatch.Groups[1].Value
+
+                    Write-Host "  DISM version build: $candidateBuild"
+
+                    if (
+                        -not [string]::IsNullOrWhiteSpace($candidateBuild)
+                    ) {
+                        $buildCandidates += $candidateBuild
+                        continue
+                    }
+                }
+
+                Write-Host '  No matching build found in DISM package metadata.'
+            }
+
+            if ($buildCandidates.Count -eq 0) {
+                throw @"
+Unable to determine the Windows 10 LCU build from package metadata.
+
+LCU:       $($resolvedLcu.KB)
+MSU:       $($resolvedLcu.FileName)
+BuildRegex: $buildRegex
+
+The LCU was resolved and downloaded successfully, but no matching
+19044.xxxx package identity/version was found in the extracted CAB.
+"@
+            }
+
+            $authoritativeBuild = (
+                $buildCandidates |
+                    Sort-Object {
+                        try {
+                            [version]$_
+                        }
+                        catch {
+                            [version]'0.0'
+                        }
+                    } -Descending |
+                    Select-Object -First 1
+            )
+
+            Write-Host ''
+            Write-Host 'Windows 10 authoritative LCU build:'
+            Write-Host "  $authoritativeBuild"
+            Write-Host ''
+        }
+        finally {
             if (Test-Path -LiteralPath $tempExtract) {
                 Remove-Item `
                     -LiteralPath $tempExtract `
                     -Recurse `
-                    -Force
+                    -Force `
+                    -ErrorAction SilentlyContinue
             }
-
-            New-Item `
-                -ItemType Directory `
-                -Force `
-                -Path $tempExtract | Out-Null
-
-            try {
-
-                Write-Host ''
-                Write-Host 'Inspecting Windows 10 LCU package metadata...'
-                Write-Host "  MSU: $($resolvedLcu.LocalPath)"
-
-                # Extract CAB files from the MSU.
-                & $sevenZip `
-                    'x' `
-                    $resolvedLcu.LocalPath `
-                    "-o$tempExtract" `
-                    '-y' `
-                    '*.cab' | Out-Null
-
-                if ($LASTEXITCODE -ne 0) {
-                    throw (
-                        "7-Zip failed to extract CAB files from the Windows 10 " +
-                        "LCU MSU. Exit code: $LASTEXITCODE"
-                    )
-                }
-
-                $cabFiles = @(
-                    Get-ChildItem `
-                        -LiteralPath $tempExtract `
-                        -Recurse `
-                        -File `
-                        -Filter '*.cab'
-                )
-
-                if ($cabFiles.Count -eq 0) {
-                    throw (
-                        "No CAB files were extracted from Windows 10 LCU MSU: " +
-                        $resolvedLcu.LocalPath
-                    )
-                }
-
-                $buildCandidates = @()
-
-                foreach ($cab in $cabFiles) {
-
-                    Write-Host "  Inspecting CAB: $($cab.Name)"
-
-                    $dismOutput = @(
-                        & $dismExe `
-                            '/English' `
-                            '/Get-PackageInfo' `
-                            "/PackagePath:$($cab.FullName)" `
-                            2>&1
-                    )
-
-                    $dismExitCode = $LASTEXITCODE
-
-                    if ($dismExitCode -ne 0) {
-                        Write-Host (
-                            "WARNING: DISM /Get-PackageInfo failed for " +
-                            "$($cab.Name) with exit code $dismExitCode."
-                        )
-                        continue
-                    }
-
-                    $dismText = $dismOutput -join "`r`n"
-
-                    # Prefer the profile's target build family.
-                    $buildRegex = [string](Get-ProfileProperty `
-                        -ProfileObject $imageProfile `
-                        -Name 'BuildRegex' `
-                        -DefaultValue '')
-
-                    if ([string]::IsNullOrWhiteSpace($buildRegex)) {
-                        $buildRegex = '\d{5}\.\d+'
-                    }
-
-                    $matches = [regex]::Matches(
-                        $dismText,
-                        $buildRegex
-                    )
-
-                    foreach ($match in $matches) {
-
-                        if (-not [string]::IsNullOrWhiteSpace($match.Value)) {
-                            $buildCandidates += $match.Value
-                        }
-                    }
-                }
-
-                if ($buildCandidates.Count -gt 0) {
-
-                    # Pick the highest matching package version.
-                    $authoritativeBuild = (
-                        $buildCandidates |
-                            Sort-Object {
-                                try {
-                                    [version]$_
-                                }
-                                catch {
-                                    [version]'0.0'
-                                }
-                            } -Descending |
-                            Select-Object -First 1
-                    )
-
-                    Write-Host ''
-                    Write-Host 'Windows 10 authoritative LCU build:'
-                    Write-Host "  $authoritativeBuild"
-                    Write-Host ''
-                }
-            }
-            catch {
-                Write-Host (
-                    "WARNING: Unable to inspect Windows 10 LCU package " +
-                    "metadata: $($_.Exception.Message)"
-                )
-            }
-            finally {
-                if (Test-Path -LiteralPath $tempExtract) {
-                    Remove-Item `
-                        -LiteralPath $tempExtract `
-                        -Recurse `
-                        -Force `
-                        -ErrorAction SilentlyContinue
-                }
-            }
-        }
-        else {
-            Write-Host 'WARNING: 7-Zip was not found; cannot inspect Windows 10 LCU MSU.'
         }
     }
 }
