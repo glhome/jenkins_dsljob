@@ -25,57 +25,276 @@ def call(Map cfg = [:]) {
     def lastPatchPath = "${windowsProduct}/${windowsRelease}/${architecture}/patched/lastpatch.txt"
     powershell("""
 \$ErrorActionPreference = 'Stop'
+
 \$env:JFROG_CLI_HOME_DIR = 'C:\\Jenkins\\jfrog'
-if (-not (Get-Command jf.exe -ErrorAction SilentlyContinue)) { throw 'JFrog CLI was not found.' }
-jf rt ping --server-id=local-artifactory 2>&1 | ForEach-Object { Write-Host \$_ }
-if (\$LASTEXITCODE -ne 0) { throw 'Artifactory connection failed.' }
-\$iso='${isoPath}'; \$sha='${shaPath}'; \$manifest='${manifestPath}'
-\$isoArtifact='${artifactoryRepo}/${isoArtifact}'; \$shaArtifact='${artifactoryRepo}/${shaArtifact}'; \$manifestArtifact='${artifactoryRepo}/${manifestArtifact}'
-Write-Host "Publishing immutable patched Windows ISO..."
-foreach (\$artifact in @(\$isoArtifact,\$shaArtifact,\$manifestArtifact)) {
+
+if (-not (Get-Command jf.exe -ErrorAction SilentlyContinue)) {
+    throw 'JFrog CLI was not found.'
+}
+
+# ============================================================
+# Run jf.exe without allowing native stderr to become a
+# PowerShell NativeCommandError.
+# ============================================================
+
+function Invoke-JfCapture {
+    param(
+        [Parameter(Mandatory = \$true)]
+        [string[]] \$Arguments
+    )
+
+    \$tempRoot = Join-Path `
+        \$env:TEMP `
+        ('windows-image-jf-' + [guid]::NewGuid().ToString('N'))
+
+    New-Item `
+        -ItemType Directory `
+        -Force `
+        -Path \$tempRoot |
+        Out-Null
+
+    \$stdoutFile = Join-Path \$tempRoot 'stdout.txt'
+    \$stderrFile = Join-Path \$tempRoot 'stderr.txt'
+
+    try {
+
+        \$process = Start-Process `
+            -FilePath 'jf.exe' `
+            -ArgumentList \$Arguments `
+            -Wait `
+            -PassThru `
+            -NoNewWindow `
+            -RedirectStandardOutput \$stdoutFile `
+            -RedirectStandardError \$stderrFile
+
+        \$stdout = ''
+
+        if (Test-Path -LiteralPath \$stdoutFile) {
+            \$stdout = Get-Content `
+                -LiteralPath \$stdoutFile `
+                -Raw `
+                -ErrorAction SilentlyContinue
+        }
+
+        \$stderr = ''
+
+        if (Test-Path -LiteralPath \$stderrFile) {
+            \$stderr = Get-Content `
+                -LiteralPath \$stderrFile `
+                -Raw `
+                -ErrorAction SilentlyContinue
+        }
+
+        return [pscustomobject]@{
+            ExitCode = [int]\$process.ExitCode
+            StdOut   = [string]\$stdout
+            StdErr   = [string]\$stderr
+        }
+    }
+    finally {
+
+        if (Test-Path -LiteralPath \$tempRoot) {
+            Remove-Item `
+                -LiteralPath \$tempRoot `
+                -Recurse `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# ============================================================
+# Paths / artifacts
+# ============================================================
+
+\$iso='${isoPath}'
+\$sha='${shaPath}'
+\$manifest='${manifestPath}'
+
+\$isoArtifact='${artifactoryRepo}/${isoArtifact}'
+\$shaArtifact='${artifactoryRepo}/${shaArtifact}'
+\$manifestArtifact='${artifactoryRepo}/${manifestArtifact}'
+
+# ============================================================
+# Artifactory connection
+# ============================================================
+
+\$ping = Invoke-JfCapture @(
+    'rt'
+    'ping'
+    '--server-id=local-artifactory'
+)
+
+if (\$ping.StdOut) {
+    Write-Host \$ping.StdOut.Trim()
+}
+
+if (\$ping.StdErr) {
+    Write-Host \$ping.StdErr.Trim()
+}
+
+if (\$ping.ExitCode -ne 0) {
+    throw "Artifactory connection failed. JFrog exit code: \$($ping.ExitCode)"
+}
+
+# ============================================================
+# Immutable publish checks
+# ============================================================
+
+Write-Host 'Publishing immutable patched Windows ISO...'
+
+foreach (\$artifact in @(
+    \$isoArtifact
+    \$shaArtifact
+    \$manifestArtifact
+)) {
 
     Write-Host "Checking immutable artifact: \$artifact"
 
-    & jf rt s `
-        --server-id=local-artifactory `
-        --count `
-        --fail-no-op `
-        "\$artifact" `
-        2> \$null
+    \$search = Invoke-JfCapture @(
+        'rt'
+        's'
+        '--server-id=local-artifactory'
+        '--count'
+        '--fail-no-op'
+        \$artifact
+    )
 
-    \$searchExitCode = \$LASTEXITCODE
+    if (-not [string]::IsNullOrWhiteSpace(\$search.StdErr)) {
+        Write-Host \$search.StdErr.Trim()
+    }
 
-    switch (\$searchExitCode) {
+    if (-not [string]::IsNullOrWhiteSpace(\$search.StdOut)) {
+        Write-Host \$search.StdOut.Trim()
+    }
+
+    switch (\$search.ExitCode) {
 
         0 {
             throw "Immutable artifact already exists: \$artifact"
         }
 
         2 {
-            Write-Host "Artifact does not exist; safe to publish: \$artifact"
+            Write-Host `
+                "Artifact does not exist; safe to publish: \$artifact"
         }
 
         default {
             throw (
                 "Artifactory immutable check failed for " +
-                "\$artifact with JFrog exit code \$searchExitCode."
+                "\$artifact with JFrog exit code \$($search.ExitCode)."
             )
         }
     }
 }
-& jf rt upload --server-id=local-artifactory --flat=true --detailed-summary "\$iso" "\$isoArtifact" 2>&1 | ForEach-Object { Write-Host \$_ }
-if (\$LASTEXITCODE -ne 0) { throw "ISO upload failed with exit code \${LASTEXITCODE}" }
-& jf rt upload --server-id=local-artifactory --flat=true --detailed-summary "\$sha" "\$shaArtifact" 2>&1 | ForEach-Object { Write-Host \$_ }
-if (\$LASTEXITCODE -ne 0) { throw "SHA256 upload failed with exit code \${LASTEXITCODE}" }
-& jf rt upload --server-id=local-artifactory --flat=true --detailed-summary "\$manifest" "\$manifestArtifact" 2>&1 | ForEach-Object { Write-Host \$_ }
-if (\$LASTEXITCODE -ne 0) { throw "Manifest upload failed with exit code \${LASTEXITCODE}" }
-\$lastPatchFile=Join-Path \$env:TEMP 'windows-image-lastpatch.txt'
-'${lcuBuild}' | Set-Content -LiteralPath \$lastPatchFile -Encoding ASCII -NoNewline
-\$lastPatchArtifact='${artifactoryRepo}/${lastPatchPath}'
+
+# ============================================================
+# Upload helper
+# ============================================================
+
+function Publish-JfArtifact {
+    param(
+        [Parameter(Mandatory = \$true)]
+        [string] \$LocalPath,
+
+        [Parameter(Mandatory = \$true)]
+        [string] \$ArtifactPath,
+
+        [Parameter(Mandatory = \$true)]
+        [string] \$Description
+    )
+
+    Write-Host ""
+    Write-Host "Publishing \$Description..."
+    Write-Host "  Local:    \$LocalPath"
+    Write-Host "  Artifact: \$ArtifactPath"
+
+    \$result = Invoke-JfCapture @(
+        'rt'
+        'upload'
+        '--server-id=local-artifactory'
+        '--flat=true'
+        '--detailed-summary'
+        \$LocalPath
+        \$ArtifactPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace(\$result.StdOut)) {
+        Write-Host \$result.StdOut.Trim()
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace(\$result.StdErr)) {
+        Write-Host \$result.StdErr.Trim()
+    }
+
+    if (\$result.ExitCode -ne 0) {
+        throw (
+            "\$Description upload failed with JFrog exit code " +
+            "\$($result.ExitCode)."
+        )
+    }
+}
+
+# ============================================================
+# Publish ISO
+# ============================================================
+
+Publish-JfArtifact `
+    -LocalPath \$iso `
+    -ArtifactPath \$isoArtifact `
+    -Description 'ISO'
+
+# ============================================================
+# Publish SHA256
+# ============================================================
+
+Publish-JfArtifact `
+    -LocalPath \$sha `
+    -ArtifactPath \$shaArtifact `
+    -Description 'SHA256'
+
+# ============================================================
+# Publish manifest
+# ============================================================
+
+Publish-JfArtifact `
+    -LocalPath \$manifest `
+    -ArtifactPath \$manifestArtifact `
+    -Description 'manifest'
+
+# ============================================================
+# Update lastpatch pointer
+#
+# This remains mutable by design.
+# ============================================================
+
+\$lastPatchFile = Join-Path `
+    \$env:TEMP `
+    'windows-image-lastpatch.txt'
+
+'${lcuBuild}' |
+    Set-Content `
+        -LiteralPath \$lastPatchFile `
+        -Encoding ASCII `
+        -NoNewline
+
+\$lastPatchArtifact =
+    '${artifactoryRepo}/${lastPatchPath}'
+
+Write-Host ""
 Write-Host "Updating lastpatch pointer: \$lastPatchArtifact"
-& jf rt upload --server-id=local-artifactory --flat=true --detailed-summary "\$lastPatchFile" "\$lastPatchArtifact" 2>&1 | ForEach-Object { Write-Host \$_ }
-if (\$LASTEXITCODE -ne 0) { throw "lastpatch.txt upload failed with exit code \${LASTEXITCODE}" }
-Remove-Item -LiteralPath \$lastPatchFile -Force -ErrorAction SilentlyContinue
+
+Publish-JfArtifact `
+    -LocalPath \$lastPatchFile `
+    -ArtifactPath \$lastPatchArtifact `
+    -Description 'lastpatch.txt'
+
+Remove-Item `
+    -LiteralPath \$lastPatchFile `
+    -Force `
+    -ErrorAction SilentlyContinue
+
+Write-Host ''
 Write-Host 'Publish completed successfully.'
 """)
 }
