@@ -2914,15 +2914,16 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
     # -------------------------------------------------------------------------
     # Determine authoritative Windows 10 LCU build.
     #
-    # Catalog does not reliably expose the resulting OS build.
+    # The Catalog row does not reliably expose the full build.
     # The MSU filename does not contain the build.
     #
-    # Extract the CAB from the MSU, then read the package identity with DISM.
-    # Example package identity:
+    # The LCU MSU contains a CAB, and the CAB contains package MUM files.
+    # Package identity/version in the MUM metadata contains the actual
+    # servicing revision, for example:
     #
-    #   Package_for_RollupFix~31bf3856ad364e35~amd64~~19044.7727.1.0
+    #   ...~~19044.7727.1.0.mum
     #
-    # The profile BuildRegex selects the OS build family (19044.xxxx).
+    # Use that metadata instead of parsing DISM console output.
     # -------------------------------------------------------------------------
 
     $authoritativeBuild = [string]$resolvedLcu.Build
@@ -2956,14 +2957,8 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
             }
         }
 
-        if (-not $sevenZip) {
+        if ([string]::IsNullOrWhiteSpace($sevenZip)) {
             throw '7-Zip was not found; cannot inspect the Windows 10 LCU MSU.'
-        }
-
-        $dismExe = "$env:SystemRoot\System32\dism.exe"
-
-        if (-not (Test-Path -LiteralPath $dismExe -PathType Leaf)) {
-            throw "DISM executable was not found: $dismExe"
         }
 
         $buildRegex = [string](Get-ProfileProperty `
@@ -2997,7 +2992,10 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
             Write-Host 'Inspecting Windows 10 LCU package metadata:'
             Write-Host "  MSU: $($resolvedLcu.LocalPath)"
 
-            # Extract CAB(s) from the MSU.
+            # -------------------------------------------------------------
+            # Step 1: extract CAB files from the MSU.
+            # -------------------------------------------------------------
+
             & $sevenZip `
                 'x' `
                 $resolvedLcu.LocalPath `
@@ -3008,7 +3006,12 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
 
             $sevenZipExitCode = $LASTEXITCODE
 
-            Write-Host "  7-Zip exit code: $sevenZipExitCode"
+            if ($sevenZipExitCode -ne 0) {
+                throw (
+                    "7-Zip failed to extract CAB files from the Windows 10 " +
+                    "LCU MSU. Exit code: $sevenZipExitCode"
+                )
+            }
 
             $cabFiles = @(
                 Get-ChildItem `
@@ -3022,103 +3025,156 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
 
             if ($cabFiles.Count -eq 0) {
                 throw (
-                    "No CAB files were extracted from Windows 10 LCU MSU. " +
-                    "7-Zip exit code: $sevenZipExitCode"
+                    "No CAB files were extracted from Windows 10 LCU MSU: " +
+                    $resolvedLcu.LocalPath
                 )
             }
 
             $buildCandidates = @()
 
+            # -------------------------------------------------------------
+            # Step 2: extract MUM files from every CAB.
+            # -------------------------------------------------------------
+
             foreach ($cab in $cabFiles) {
 
-                Write-Host ''
-                Write-Host "  Inspecting CAB: $($cab.Name)"
+                $cabExtract = Join-Path `
+                    $tempExtract `
+                    ("cab-" + [guid]::NewGuid().ToString('N'))
 
-                $dismOutput = @(
-                    & $dismExe `
-                        '/English' `
-                        '/Get-PackageInfo' `
-                        "/PackagePath:$($cab.FullName)" `
-                        2>&1
-                )
+                New-Item `
+                    -ItemType Directory `
+                    -Force `
+                    -Path $cabExtract | Out-Null
 
-                $dismExitCode = $LASTEXITCODE
+                try {
 
-                Write-Host "  DISM exit code: $dismExitCode"
+                    Write-Host ''
+                    Write-Host "  Inspecting CAB: $($cab.Name)"
 
-                if ($dismExitCode -ne 0) {
-                    Write-Host '  DISM /Get-PackageInfo failed.'
-                    continue
-                }
+                    & $sevenZip `
+                        'x' `
+                        $cab.FullName `
+                        "-o$cabExtract" `
+                        '-y' `
+                        '*.mum' `
+                        2>&1 | Out-Null
 
-                $dismText = (
-                    $dismOutput |
-                        ForEach-Object { [string]$_ }
-                ) -join "`r`n"
+                    $mumExitCode = $LASTEXITCODE
 
-                # -------------------------------------------------------------
-                # Primary source:
-                # Package Identity contains the actual servicing revision.
-                # -------------------------------------------------------------
-
-                $identityMatch = [regex]::Match(
-                    $dismText,
-                    "(?im)^\s*Package Identity\s*:\s*.*?($buildRegex)"
-                )
-
-                if ($identityMatch.Success) {
-
-                    $candidateBuild =
-                        $identityMatch.Groups[1].Value
-
-                    Write-Host "  Package Identity build: $candidateBuild"
-
-                    if (
-                        -not [string]::IsNullOrWhiteSpace($candidateBuild)
-                    ) {
-                        $buildCandidates += $candidateBuild
+                    if ($mumExitCode -ne 0) {
+                        Write-Host (
+                            "  WARNING: 7-Zip failed to extract MUM files " +
+                            "from $($cab.Name). Exit code: $mumExitCode"
+                        )
                         continue
                     }
-                }
 
-                # -------------------------------------------------------------
-                # Fallback:
-                # Search explicit DISM Version / Product Version fields.
-                # -------------------------------------------------------------
+                    $mumFiles = @(
+                        Get-ChildItem `
+                            -LiteralPath $cabExtract `
+                            -Recurse `
+                            -File `
+                            -Filter '*.mum'
+                    )
 
-                $versionMatch = [regex]::Match(
-                    $dismText,
-                    "(?im)^\s*(?:Version|Product Version)\s*:\s*.*?($buildRegex)"
-                )
+                    Write-Host "  MUM count: $($mumFiles.Count)"
 
-                if ($versionMatch.Success) {
+                    foreach ($mum in $mumFiles) {
 
-                    $candidateBuild =
-                        $versionMatch.Groups[1].Value
+                        # -------------------------------------------------
+                        # Primary source:
+                        # MUM filename package identity.
+                        # -------------------------------------------------
 
-                    Write-Host "  DISM version build: $candidateBuild"
+                        $nameMatch = [regex]::Match(
+                            $mum.Name,
+                            $buildRegex
+                        )
 
-                    if (
-                        -not [string]::IsNullOrWhiteSpace($candidateBuild)
-                    ) {
-                        $buildCandidates += $candidateBuild
-                        continue
+                        if ($nameMatch.Success) {
+
+                            $candidateBuild =
+                                $nameMatch.Value
+
+                            Write-Host (
+                                "  MUM package build: $candidateBuild " +
+                                "($($mum.Name))"
+                            )
+
+                            $buildCandidates += $candidateBuild
+                            continue
+                        }
+
+                        # -------------------------------------------------
+                        # Fallback:
+                        # MUM XML version attribute/content.
+                        # -------------------------------------------------
+
+                        try {
+
+                            $mumText = Get-Content `
+                                -LiteralPath $mum.FullName `
+                                -Raw `
+                                -ErrorAction Stop
+
+                            $contentMatch = [regex]::Match(
+                                $mumText,
+                                $buildRegex
+                            )
+
+                            if ($contentMatch.Success) {
+
+                                $candidateBuild =
+                                    $contentMatch.Value
+
+                                Write-Host (
+                                    "  MUM metadata build: $candidateBuild " +
+                                    "($($mum.Name))"
+                                )
+
+                                $buildCandidates += $candidateBuild
+                            }
+                        }
+                        catch {
+                            Write-Host (
+                                "  WARNING: Unable to read MUM " +
+                                "$($mum.Name): $($_.Exception.Message)"
+                            )
+                        }
                     }
                 }
+                finally {
 
-                Write-Host '  No matching build found in DISM package metadata.'
+                    if (Test-Path -LiteralPath $cabExtract) {
+                        Remove-Item `
+                            -LiteralPath $cabExtract `
+                            -Recurse `
+                            -Force `
+                            -ErrorAction SilentlyContinue
+                    }
+                }
             }
+
+            # -------------------------------------------------------------
+            # Step 3: choose highest matching build.
+            # -------------------------------------------------------------
+
+            $buildCandidates = @(
+                $buildCandidates |
+                    Where-Object {
+                        -not [string]::IsNullOrWhiteSpace($_)
+                    } |
+                    Sort-Object -Unique
+            )
 
             if ($buildCandidates.Count -eq 0) {
                 throw @"
-Unable to determine the Windows 10 LCU build from package metadata.
+Unable to determine the Windows 10 LCU build from MUM metadata.
 
-LCU:       $($resolvedLcu.KB)
-MSU:       $($resolvedLcu.FileName)
+LCU:        $($resolvedLcu.KB)
+MSU:        $($resolvedLcu.FileName)
 BuildRegex: $buildRegex
-
-The LCU was resolved and downloaded successfully, but no matching
-19044.xxxx package identity/version was found in the extracted CAB.
 "@
             }
 
@@ -3141,6 +3197,7 @@ The LCU was resolved and downloaded successfully, but no matching
             Write-Host ''
         }
         finally {
+
             if (Test-Path -LiteralPath $tempExtract) {
                 Remove-Item `
                     -LiteralPath $tempExtract `
