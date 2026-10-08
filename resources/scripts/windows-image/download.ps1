@@ -243,19 +243,81 @@ function Invoke-JFrog {
     Write-Host "Executing JFrog CLI:"
     Write-Host "  $JfPath $($safeArgs -join ' ')"
 
-    & $JfPath @jfArgs
+    $tempRoot = Join-Path `
+        $env:TEMP `
+        ('windows-image-jf-' + [guid]::NewGuid().ToString('N'))
 
-    # LASTEXITCODE is valid here because jf.exe is a native executable.
-    $exitCode = $LASTEXITCODE
+    New-Item `
+        -ItemType Directory `
+        -Force `
+        -Path $tempRoot |
+        Out-Null
 
-    if ($exitCode -ne 0) {
-        throw (
-            "jf.exe failed with exit code $exitCode. " +
-            "Arguments: $($safeArgs -join ' ')"
-        )
+    $stdoutFile = Join-Path $tempRoot 'stdout.txt'
+    $stderrFile = Join-Path $tempRoot 'stderr.txt'
+
+    try {
+
+        $process = Start-Process `
+            -FilePath $JfPath `
+            -ArgumentList $jfArgs `
+            -Wait `
+            -PassThru `
+            -NoNewWindow `
+            -RedirectStandardOutput $stdoutFile `
+            -RedirectStandardError $stderrFile
+
+        $stdout = ''
+
+        if (Test-Path -LiteralPath $stdoutFile) {
+            $stdout = Get-Content `
+                -LiteralPath $stdoutFile `
+                -Raw `
+                -ErrorAction SilentlyContinue
+        }
+
+        $stderr = ''
+
+        if (Test-Path -LiteralPath $stderrFile) {
+            $stderr = Get-Content `
+                -LiteralPath $stderrFile `
+                -Raw `
+                -ErrorAction SilentlyContinue
+        }
+
+        # JFrog normally writes informational/progress messages to stderr.
+        # Emit them explicitly as normal Jenkins console output so that
+        # PowerShell does not convert them into NativeCommandError records.
+
+        if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+            Write-Host $stdout.Trim()
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+            Write-Host $stderr.Trim()
+        }
+
+        $exitCode = [int]$process.ExitCode
+
+        if ($exitCode -ne 0) {
+            throw (
+                "jf.exe failed with exit code $exitCode. " +
+                "Arguments: $($safeArgs -join ' ')"
+            )
+        }
+
+        return $exitCode
     }
+    finally {
 
-    return $exitCode
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item `
+                -LiteralPath $tempRoot `
+                -Recurse `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Get-Sha256 {
