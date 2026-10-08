@@ -368,7 +368,7 @@ function Get-ArtifactText {
                     'rt'
                     'dl'
                     $jfArtifact
-                    $tempDir
+                    $downloadedFile
                     '--flat=true'
                 )
 
