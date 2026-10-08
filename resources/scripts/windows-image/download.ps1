@@ -489,9 +489,10 @@ function Get-ArtifactText {
         }
 
         default {
-            throw `
+            throw (
                 "Unsupported ArtifactTransferMethod: " +
                 "$ArtifactTransferMethod"
+            )
         }
     }
 }
@@ -1474,9 +1475,10 @@ else {
         }
         catch {
 
-            Write-Warning `
+            Write-Warning (
                 "Could not parse remote patched manifest: " +
                 "$($_.Exception.Message)"
+            )
         }
     }
     else {
