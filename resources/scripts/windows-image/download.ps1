@@ -249,9 +249,10 @@ function Invoke-JFrog {
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -ne 0) {
-        throw `
+        throw (
             "jf.exe failed with exit code $exitCode. " +
             "Arguments: $($safeArgs -join ' ')"
+        )
     }
 
     return $exitCode
@@ -383,9 +384,10 @@ function Get-ArtifactText {
                             -PathType Leaf
                     )
                 ) {
-                    throw `
+                    throw (
                         "JFrog download succeeded but artifact was not found: " +
                         "$downloadedFile"
+                    )
                 }
 
                 $bytes = [IO.File]::ReadAllBytes($downloadedFile)
