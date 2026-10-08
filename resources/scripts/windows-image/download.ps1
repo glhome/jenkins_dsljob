@@ -1401,22 +1401,19 @@ else {
             # ------------------------------------------------
 
             if (
-                $remoteLcu.PSObject.Properties.Name -notcontains 'msu' -or
-                $null -eq $remoteLcu.msu
+                $remoteLcu.PSObject.Properties.Name -notcontains 'fileName' -or
+                [string]::IsNullOrWhiteSpace(
+                    [string]$remoteLcu.fileName
+                )
             ) {
-                throw `
+                throw (
                     "Patched image manifest does not contain " +
-                    "updates.lcu.msu."
+                    "updates.lcu.fileName."
+                )
             }
 
-            $remoteFileName = ''
-
-            if (
-                $remoteLcu.msu.PSObject.Properties.Name -contains 'fileName'
-            ) {
-                $remoteFileName =
-                    [string]$remoteLcu.msu.fileName
-            }
+            $remoteFileName =
+                [string]$remoteLcu.fileName
 
             # ------------------------------------------------
             # Compare cache inputs
