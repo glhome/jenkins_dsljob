@@ -1,0 +1,100 @@
+def productVersion = "v7.2"
+def JOB_BASE_NAME="catalys_NiDriverInstaller"
+pipeline{
+    environment{
+        _7zip="C:\\program files\\7-zip\\7z.exe"
+        LABVIEW2024="C:\\Program Files\\National Instruments\\LabVIEW 2024\\LabVIEW.exe"
+
+    }
+    agent{
+        node{
+            label 'CatalysBuild_VM148'
+        }
+    }
+    stages{
+        stage('clone_repo'){
+            steps {
+                checkout scmGit (
+                    branches: [[ name: 'develop' ]],
+                    extensions: [ cloneOption(shallow: true) ],
+                    userRemoteConfigs: [[ credentialsId: 'TADH-CIUser-Service-Account', url: 'https://sourcecode.jnj.com/scm/asx-nauo/catalys_lv.git' ]]
+                )
+            }
+        }
+        stage('Build'){
+            steps {
+                bat """
+                REM clean up build output
+                if exist "C:\\builds\\catalys_lv\\Catalys HW Driver Installation" (rmdir /S /Q "C:\\builds\\catalys_lv\\Catalys HW Driver Installation")
+
+                LabVIEWCLI -OperationName ExecuteBuildSpec -PortNumber 3364 -ProjectPath "%WORKSPACE%\\Catalys_v1\\Main Dev\\Catalys_v1.lvproj" -TargetName "My Computer" -BuildSpecName "Catalys HW Driver Installation" -LabVIEWPath "%LABVIEW2024%"
+                if %errorlevel% NEQ 0 (exit 1)
+                "%_7zip%" a -r zipfolder\\CatalysNiDriverInstaller.zip "C:\\builds\\catalys_lv\\Catalys HW Driver Installation\\Volume\\*"
+                """
+             }
+        }
+        stage('update lastRelease file'){
+            steps{
+                bat """
+                FOR /f %%s in ('git rev-parse --short HEAD') do set commit_hash=%%s
+                FOR /F "tokens=1-2 delims=Version^=" %%i IN ('type "C:\\builds\\catalys_lv\\Catalys HW Driver Installation\\Volume\\setup.ini" ^| findstr "^Version="') do set currentVersion=%%i
+                echo %BUILD_NUMBER% CatalysNiDriverInstaller %currentVersion%  COMMIT_ID %commit_hash% > build.txt
+                copy build.txt lastRelease.txt
+                """
+            }
+        }
+        stage('toArtifactory'){
+            steps{
+                rtUpload serverId: 'artifactory',
+                    spec: """{"files":[
+                        {"pattern":"${WORKSPACE}/zipfolder/CatalysNiDriverInstaller.zip","target":"tadh-generic-snapshot/Catalys/Builds/${productVersion}/${JOB_BASE_NAME}/${BUILD_NUMBER}/"},
+                        {"pattern":"${WORKSPACE}/build.txt","target":"tadh-generic-snapshot/Catalys/Builds/${productVersion}/${JOB_BASE_NAME}/${BUILD_NUMBER}/"},
+                        {"pattern":"${WORKSPACE}/lastRelease.txt","target":"tadh-generic-snapshot/Catalys/Builds/${productVersion}/${JOB_BASE_NAME}/"}
+                    ]}"""
+                rtPublishBuildInfo serverId: 'artifactory'
+            }
+        }
+    }
+    post{
+        always{
+            script{
+                notifyBitbucket()
+            }
+        }
+        success{
+            emailext attachLog: false,
+            subject: "${JOB_NAME} Build: ${currentBuild.currentResult}",
+                recipientProviders: [
+                    [$class: 'CulpritsRecipientProvider'],
+                    [$class: 'DevelopersRecipientProvider'],
+                    [$class: 'RequesterRecipientProvider'],
+                ],
+                to: 'glam3',
+                body: """
+Build #${BUILD_NUMBER} ran on ${NODE_NAME} terminated with ${currentBuild.currentResult}.
+
+Build log: ${BUILD_URL}console
+Build artifact: https://artifactrepo.jnj.com/artifactory/webapp/#/artifacts/browse/tree/General/tadh-generic-snapshot/Catalys/Builds/${productVersion}/${JOB_BASE_NAME}/${BUILD_NUMBER}
+                """
+        }
+        failure{
+            emailext attachLog: true,
+            //compressLog: true,
+            subject: "${JOB_NAME} Build: ${currentBuild.currentResult}",
+                recipientProviders: [
+                    [$class: 'CulpritsRecipientProvider'],
+                    [$class: 'DevelopersRecipientProvider'],
+                    [$class: 'RequesterRecipientProvider'],
+                ],
+                to: 'glam3',
+                body: """
+Build #${BUILD_NUMBER} ran on ${NODE_NAME} terminated with ${currentBuild.currentResult}.  See attached.
+                """
+        }
+/*
+        cleanup {
+            cleanWs(disableDeferredWipeout: true, deleteDirs: true)
+        }
+*/
+    }
+}
