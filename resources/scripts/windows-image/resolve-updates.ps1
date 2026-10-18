@@ -17,6 +17,10 @@ param(
     [string]$ArtifactoryBaseUrl,
 
     [Parameter(Mandatory = $false)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ArtifactoryServerId = 'local-artifactory',
+
+    [Parameter(Mandatory = $false)]
     [string]$ArtifactoryRepo = 'snapshot-generic-local',
 
     [Parameter(Mandatory = $false)]
@@ -206,6 +210,13 @@ if ($ArtifactoryRoot -notmatch '/artifactory$') {
 
 Write-Host "Artifactory URL:     $ArtifactoryRoot"
 
+Write-Host "Validating configured JFrog CLI server: $ArtifactoryServerId"
+& $JfPath rt ping "--server-id=$ArtifactoryServerId"
+$jfPingExitCode = $LASTEXITCODE
+if ($jfPingExitCode -ne 0) {
+    throw "Configured JFrog CLI server '$ArtifactoryServerId' failed ping with exit code $jfPingExitCode. Verify this server ID exists for the Jenkins agent account and that jf rt ping succeeds under that account."
+}
+
 # -----------------------------------------------------------------------------
 # JFrog authentication helpers
 # -----------------------------------------------------------------------------
@@ -258,18 +269,18 @@ function Invoke-JFrog {
         [string[]]$Arguments
     )
 
-    $authArgs = @(Get-JFrogAuthArguments)
-
     $fullArgs = @()
-
     $fullArgs += $Arguments
 
-    if ($fullArgs -notcontains '--url') {
-        $fullArgs += '--url'
-        $fullArgs += $ArtifactoryRoot
-    }
+    $hasServerId = @(
+        $fullArgs | Where-Object {
+            [string]$_ -match '^--server-id(?:=|$)'
+        }
+    ).Count -gt 0
 
-    $fullArgs += $authArgs
+    if (-not $hasServerId) {
+        $fullArgs += "--server-id=$ArtifactoryServerId"
+    }
 
     $safeArgs = @()
 
@@ -353,6 +364,7 @@ function Test-ArtifactoryFile {
             'search'
             $artifact
             '--count'
+            "--server-id=$ArtifactoryServerId"
         )
 
         $process = Start-Process `
@@ -557,6 +569,250 @@ function Publish-ArtifactoryFile {
         $LocalPath
         $artifact
     )
+}
+
+# -----------------------------------------------------------------------------
+# Verify/update Artifactory package records
+# -----------------------------------------------------------------------------
+
+function ConvertTo-WindowsProcessArgument {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Argument
+    )
+
+    if ($Argument.Length -gt 0 -and $Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashCount = 0
+
+    foreach ($character in $Argument.ToCharArray()) {
+        if ([int][char]$character -eq 92) {
+            $backslashCount++
+            continue
+        }
+
+        if ([int][char]$character -eq 34) {
+            if ($backslashCount -gt 0) {
+                [void]$builder.Append(('\' * (2 * $backslashCount + 1)))
+            }
+            else {
+                [void]$builder.Append('\')
+            }
+
+            [void]$builder.Append('"')
+            $backslashCount = 0
+            continue
+        }
+
+        if ($backslashCount -gt 0) {
+            [void]$builder.Append(('\' * $backslashCount))
+            $backslashCount = 0
+        }
+
+        [void]$builder.Append($character)
+    }
+
+    if ($backslashCount -gt 0) {
+        [void]$builder.Append(('\' * (2 * $backslashCount)))
+    }
+
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Get-ArtifactoryUpdateRecord {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RelativePath
+    )
+
+    $artifact = ConvertTo-JFrogArtifactPath -RelativePath $RelativePath
+    $expectedName = [System.IO.Path]::GetFileName($RelativePath.Replace('/', '\'))
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("jf-update-record-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+
+    $stdoutFile = Join-Path $tempRoot 'stdout.json'
+    $stderrFile = Join-Path $tempRoot 'stderr.log'
+
+    try {
+        $arguments = @(
+            'rt'
+            'search'
+            $artifact
+            '--format=json'
+            '--include=repo;path;name;sha256;size'
+            "--server-id=$ArtifactoryServerId"
+        )
+
+        $argumentLine = (
+            $arguments | ForEach-Object {
+                ConvertTo-WindowsProcessArgument -Argument ([string]$_)
+            }
+        ) -join ' '
+
+        $process = Start-Process `
+            -FilePath $JfPath `
+            -ArgumentList $argumentLine `
+            -Wait `
+            -PassThru `
+            -NoNewWindow `
+            -RedirectStandardOutput $stdoutFile `
+            -RedirectStandardError $stderrFile
+
+        $stdout = ''
+        $stderr = ''
+
+        if (Test-Path -LiteralPath $stdoutFile) {
+            $stdout = [string](Get-Content -LiteralPath $stdoutFile -Raw -ErrorAction SilentlyContinue)
+        }
+        if (Test-Path -LiteralPath $stderrFile) {
+            $stderr = [string](Get-Content -LiteralPath $stderrFile -Raw -ErrorAction SilentlyContinue)
+        }
+
+        if ($process.ExitCode -ne 0) {
+            foreach ($secret in @($ArtifactoryPassword, $ArtifactoryToken)) {
+                if (-not [string]::IsNullOrEmpty([string]$secret)) {
+                    $stderr = $stderr.Replace([string]$secret, '***')
+                    $stdout = $stdout.Replace([string]$secret, '***')
+                }
+            }
+
+            throw "Artifactory metadata search failed for '$artifact' (exit $($process.ExitCode)). $($stderr.Trim())"
+        }
+
+        if ([string]::IsNullOrWhiteSpace($stdout)) {
+            throw "Artifactory metadata search returned empty output for '$artifact'."
+        }
+
+        try {
+            $parsed = ConvertFrom-Json -InputObject $stdout -ErrorAction Stop
+        }
+        catch {
+            throw "Unable to parse Artifactory search JSON for '$artifact'. $($_.Exception.Message)"
+        }
+
+        $records = @()
+        if ($null -ne $parsed) {
+            $records = @(
+                $parsed | Where-Object {
+                    $null -ne $_ -and
+                    (
+                        -not ($_.PSObject.Properties.Name -contains 'type') -or
+                        [string]$_.type -ne 'folder'
+                    )
+                }
+            )
+        }
+
+        $matchingRecords = @(
+            $records | Where-Object {
+                $recordName = [string]$_.name
+                if ([string]::IsNullOrWhiteSpace($recordName)) {
+                    $recordName = [System.IO.Path]::GetFileName([string]$_.path)
+                }
+                $recordName -eq $expectedName
+            }
+        )
+
+        if ($matchingRecords.Count -eq 0) {
+            return [pscustomobject]@{
+                Exists = $false
+                Sha256 = ''
+            }
+        }
+
+        if ($matchingRecords.Count -ne 1) {
+            throw "Artifactory search for exact artifact '$artifact' returned $($matchingRecords.Count) matching files; refusing an ambiguous record."
+        }
+
+        $remoteSha256 = ([string]$matchingRecords[0].sha256).Trim().ToLowerInvariant()
+        if ($remoteSha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "Artifactory artifact '$artifact' exists but did not return a usable SHA256. Refusing to overwrite an unverifiable record."
+        }
+
+        return [pscustomobject]@{
+            Exists = $true
+            Sha256 = $remoteSha256
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Ensure-ArtifactoryUpdateRecord {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LocalPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RelativePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PackageKb,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PackageType,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedSha256
+    )
+
+    if (-not (Test-Path -LiteralPath $LocalPath -PathType Leaf)) {
+        throw "Cannot archive missing update package: $LocalPath"
+    }
+
+    $localSha256 = (Get-FileHash -LiteralPath $LocalPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $expected = ([string]$ExpectedSha256).Trim().ToLowerInvariant()
+
+    if (-not [string]::IsNullOrWhiteSpace($expected) -and $localSha256 -ne $expected) {
+        throw "Update package SHA256 changed before Artifactory archival. KB=$PackageKb Expected=$expected Actual=$localSha256"
+    }
+
+    $remoteRecord = Get-ArtifactoryUpdateRecord -RelativePath $RelativePath
+
+    if ($remoteRecord.Exists) {
+        if ($remoteRecord.Sha256 -ne $localSha256) {
+            throw @"
+Artifactory immutable-update conflict. The artifact path already exists with a different checksum; it was not overwritten.
+
+KB:             $PackageKb
+Type:           $PackageType
+Artifact:       $(ConvertTo-JFrogArtifactPath -RelativePath $RelativePath)
+Local SHA256:   $localSha256
+Remote SHA256:  $($remoteRecord.Sha256)
+
+Inspect the existing record and resolve the conflict manually before retrying.
+"@
+        }
+
+        Write-Host "Artifactory record verified: $PackageType $PackageKb SHA256=$localSha256"
+        return $localSha256
+    }
+
+    Write-Host "Archiving update package to Artifactory: $PackageType $PackageKb"
+    Publish-ArtifactoryFile -LocalPath $LocalPath -RelativePath $RelativePath
+
+    # Confirm that the upload is searchable and its server-side checksum is
+    # identical. A successful CLI exit alone is not enough to mark a package
+    # as archived in the manifest.
+    $remoteRecord = Get-ArtifactoryUpdateRecord -RelativePath $RelativePath
+    if (-not $remoteRecord.Exists) {
+        throw "Artifactory upload completed but the update record cannot be found: $RelativePath"
+    }
+    if ($remoteRecord.Sha256 -ne $localSha256) {
+        throw "Artifactory upload SHA256 mismatch for '$RelativePath'. Local=$localSha256 Remote=$($remoteRecord.Sha256)"
+    }
+
+    Write-Host "Artifactory archival verified: $PackageType $PackageKb SHA256=$localSha256"
+    return $localSha256
 }
 
 # -----------------------------------------------------------------------------
@@ -1458,6 +1714,18 @@ Build:       $ExpectedBuild
                 )
             }
             else {
+                if ($ExpectedType -eq 'LCU') {
+                    throw @"
+The Microsoft Catalog returned an LCU MSU whose filename does not contain a recognizable KB.
+Refusing to omit a possible required checkpoint/prerequisite package.
+
+UpdateID: $updateId
+Target KB: $($selectedRow.KB)
+File:     $fileName
+URL:      $url
+"@
+                }
+
                 Write-Host "Skipping MSU with no recognizable KB: $fileName"
                 continue
             }
@@ -1784,15 +2052,23 @@ function Resolve-PackageFile {
             Write-Host "  Path:    $localPath"
             Write-Host "  SHA256:  $actualSha256"
 
+            [void](Ensure-ArtifactoryUpdateRecord `
+                -LocalPath $localPath `
+                -RelativePath $artifactPath `
+                -PackageKb $packageKb `
+                -PackageType $PackageType `
+                -ExpectedSha256 $actualSha256)
+
             return [pscustomobject]@{
-                KB           = $packageKb
-                Type         = $PackageType
-                FileName     = $fileName
-                Url          = $downloadUrl
-                ArtifactPath = $artifactPath
-                LocalPath    = $localPath
-                Sha256       = $actualSha256
-                Source       = 'local-cache'
+                KB                    = $packageKb
+                Type                  = $PackageType
+                FileName              = $fileName
+                Url                   = $downloadUrl
+                ArtifactPath          = $artifactPath
+                LocalPath             = $localPath
+                Sha256                = $actualSha256
+                Source                = 'local-cache'
+                ArtifactoryRecorded   = $true
             }
         }
 
@@ -1822,12 +2098,6 @@ function Resolve-PackageFile {
                 -ErrorAction SilentlyContinue
         }
 
-        $jfArtifactoryUrl = $ArtifactoryBaseUrl.TrimEnd('/')
-
-        if ($jfArtifactoryUrl -notmatch '(?i)/artifactory$') {
-            $jfArtifactoryUrl = "$jfArtifactoryUrl/artifactory"
-        }
-
         $jfArgs = @(
             'rt'
             'download'
@@ -1835,28 +2105,8 @@ function Resolve-PackageFile {
             $temporaryPath
             '--flat=true'
             '--threads=4'
-            "--url=$jfArtifactoryUrl"
+            "--server-id=$ArtifactoryServerId"
         )
-
-        if (-not [string]::IsNullOrWhiteSpace($ArtifactoryToken)) {
-
-            $jfArgs += "--access-token=$ArtifactoryToken"
-        }
-        elseif (
-            -not [string]::IsNullOrWhiteSpace($ArtifactoryUser) -and
-            -not [string]::IsNullOrWhiteSpace($ArtifactoryPassword)
-        ) {
-
-            $jfArgs += '--user'
-            $jfArgs += $ArtifactoryUser
-
-            $jfArgs += '--password'
-            $jfArgs += $ArtifactoryPassword
-        }
-        else {
-            Write-Warning `
-                'No Artifactory token or username/password was supplied.'
-        }
 
         # ---------------------------------------------------------------------
         # Safe command logging
@@ -1931,8 +2181,15 @@ function Resolve-PackageFile {
                 )
             }
 
+            [void](Ensure-ArtifactoryUpdateRecord `
+                -LocalPath $localPath `
+                -RelativePath $artifactPath `
+                -PackageKb $packageKb `
+                -PackageType $PackageType `
+                -ExpectedSha256 $actualSha256)
+
             Write-Host ''
-            Write-Host 'Artifactory download successful:'
+            Write-Host 'Artifactory download successful and checksum-record verified:'
             Write-Host "  KB:       $packageKb"
             Write-Host "  File:     $fileName"
             Write-Host "  Local:    $localPath"
@@ -1946,8 +2203,9 @@ function Resolve-PackageFile {
                 Url          = $downloadUrl
                 ArtifactPath = $artifactPath
                 LocalPath    = $localPath
-                Sha256       = $actualSha256
-                Source       = 'artifactory'
+                Sha256                = $actualSha256
+                Source                = 'artifactory'
+                ArtifactoryRecorded   = $true
             }
         }
 
@@ -2053,8 +2311,15 @@ function Resolve-PackageFile {
         )
     }
 
+    [void](Ensure-ArtifactoryUpdateRecord `
+        -LocalPath $localPath `
+        -RelativePath $artifactPath `
+        -PackageKb $packageKb `
+        -PackageType $PackageType `
+        -ExpectedSha256 $actualSha256)
+
     Write-Host ''
-    Write-Host 'Microsoft Catalog download successful:'
+    Write-Host 'Microsoft Catalog download successful and archived to Artifactory:'
     Write-Host "  KB:       $packageKb"
     Write-Host "  File:     $fileName"
     Write-Host "  Local:    $localPath"
@@ -2067,8 +2332,9 @@ function Resolve-PackageFile {
         Url          = $downloadUrl
         ArtifactPath = $artifactPath
         LocalPath    = $localPath
-        Sha256       = $actualSha256
-        Source       = 'microsoft'
+        Sha256                = $actualSha256
+        Source                = 'microsoft'
+        ArtifactoryRecorded   = $true
     }
 }
 
@@ -2162,11 +2428,16 @@ function Resolve-Windows11Lcu {
     # -------------------------------------------------------------------------
 
     $resolvedPackages = @()
+    $catalogPackages = @($resolved.Packages)
 
-    foreach ($package in @($resolved.Packages)) {
+    if ($catalogPackages.Count -eq 0) {
+        throw "Microsoft Catalog returned no Windows 11 LCU packages for target $targetKb."
+    }
+
+    foreach ($package in $catalogPackages) {
 
         if ($null -eq $package) {
-            continue
+            throw "Microsoft Catalog package set contains a null package for target $targetKb."
         }
 
         $packageKb = [string]$package.KB
@@ -2259,9 +2530,10 @@ Target: $targetKb
             Url          = $resolvedPackage.Url
             ArtifactPath = $resolvedPackage.ArtifactPath
             LocalPath    = $resolvedPackage.LocalPath
-            Sha256       = $resolvedPackage.Sha256
-            Source       = $resolvedPackage.Source
-            UpdateId     = $package.UpdateId
+            Sha256                = $resolvedPackage.Sha256
+            Source                = $resolvedPackage.Source
+            ArtifactoryRecorded   = [bool]$resolvedPackage.ArtifactoryRecorded
+            UpdateId              = $package.UpdateId
         }
 
         # Normal PowerShell array append.
@@ -2271,6 +2543,19 @@ Target: $targetKb
     # -------------------------------------------------------------------------
     # Validate package resolution.
     # -------------------------------------------------------------------------
+
+    if ($resolvedPackages.Count -ne $catalogPackages.Count) {
+        throw @"
+Windows 11 LCU package resolution is incomplete.
+
+Target KB:        $targetKb
+Catalog MSUs:     $($catalogPackages.Count)
+Resolved packages: $($resolvedPackages.Count)
+
+Every target/checkpoint MSU returned by Microsoft Catalog must be downloaded
+or found in the verified local/Artifactory cache before DISM servicing starts.
+"@
+    }
 
     if ($resolvedPackages.Count -eq 0) {
         throw @"
@@ -2328,9 +2613,10 @@ $(
             Url          = $targetPackage.Url
             ArtifactPath = $targetPackage.ArtifactPath
             LocalPath    = $targetPackage.LocalPath
-            Sha256       = $targetPackage.Sha256
-            Source       = $targetPackage.Source
-            UpdateId     = $targetPackage.UpdateId
+            Sha256                = $targetPackage.Sha256
+            Source                = $targetPackage.Source
+            ArtifactoryRecorded   = [bool]$targetPackage.ArtifactoryRecorded
+            UpdateId              = $targetPackage.UpdateId
         }
 
         $resolvedPackages = @(
@@ -2710,8 +2996,9 @@ $packageList
         Url          = [string]$resolvedFile.Url
         ArtifactPath = [string]$resolvedFile.ArtifactPath
         LocalPath    = [string]$resolvedFile.LocalPath
-        Sha256       = [string]$resolvedFile.Sha256
-        Source       = [string]$resolvedFile.Source
+        Sha256                = [string]$resolvedFile.Sha256
+        Source                = [string]$resolvedFile.Source
+        ArtifactoryRecorded   = [bool]$resolvedFile.ArtifactoryRecorded
     }
 }
 
@@ -3345,6 +3632,11 @@ if ($hasPackagesProperty) {
 
     foreach ($package in @($resolvedLcu.Packages)) {
 
+        $packageWasRecorded = (
+            $package.PSObject.Properties.Name -contains 'ArtifactoryRecorded' -and
+            [bool]$package.ArtifactoryRecorded
+        )
+
         # Build the package object first.
         $normalizedPackage = [ordered]@{
             type         = [string]$package.Type
@@ -3353,8 +3645,9 @@ if ($hasPackagesProperty) {
             url          = [string]$package.Url
             artifactPath = [string]$package.ArtifactPath
             localPath    = [string]$package.LocalPath
-            sha256       = [string]$package.Sha256
-            source       = [string]$package.Source
+            sha256                = [string]$package.Sha256
+            source                = [string]$package.Source
+            artifactoryRecorded   = [bool]$packageWasRecorded
         }
 
         # UpdateId is optional for older package objects.
@@ -3376,9 +3669,10 @@ else {
         url          = [string]$targetMsu.Url
         artifactPath = [string]$targetMsu.ArtifactPath
         localPath    = [string]$targetMsu.LocalPath
-        sha256       = [string]$targetMsu.Sha256
-        source       = [string]$targetMsu.Source
-        updateId     = [string]$targetMsu.UpdateId
+        sha256                = [string]$targetMsu.Sha256
+        source                = [string]$targetMsu.Source
+        artifactoryRecorded   = [bool]$targetMsu.ArtifactoryRecorded
+        updateId              = [string]$targetMsu.UpdateId
     }
 }
 
@@ -3393,8 +3687,9 @@ $normalizedMsu = [ordered]@{
     url          = [string]$targetMsu.Url
     artifactPath = [string]$targetMsu.ArtifactPath
     localPath    = [string]$targetMsu.LocalPath
-    sha256       = [string]$targetMsu.Sha256
-    source       = [string]$targetMsu.Source
+    sha256                = [string]$targetMsu.Sha256
+    source                = [string]$targetMsu.Source
+    artifactoryRecorded   = [bool]$targetMsu.ArtifactoryRecorded
 }
 
 # -----------------------------------------------------------------------------
@@ -3418,12 +3713,35 @@ if ($null -ne $resolvedSsu) {
         url          = [string]$resolvedSsu.Url
         artifactPath = [string]$resolvedSsu.ArtifactPath
         localPath    = [string]$resolvedSsu.LocalPath
-        sha256       = [string]$resolvedSsu.Sha256
-        source       = [string]$resolvedSsu.Source
-        updateId     = [string]$resolvedSsu.UpdateId
+        sha256                = [string]$resolvedSsu.Sha256
+        source                = [string]$resolvedSsu.Source
+        artifactoryRecorded   = [bool]$resolvedSsu.ArtifactoryRecorded
+        updateId              = [string]$resolvedSsu.UpdateId
         date         = [string]$resolvedSsu.Date
         title        = [string]$resolvedSsu.Title
     }
+}
+
+# -----------------------------------------------------------------------------
+# Required Artifactory archive validation
+# -----------------------------------------------------------------------------
+
+if (-not [bool]$normalizedMsu['artifactoryRecorded']) {
+    throw "Target LCU $($normalizedMsu['kb']) is not confirmed in Artifactory; refusing to write manifest."
+}
+
+$unarchivedPackages = @(
+    $normalizedPackages | Where-Object { -not [bool]$_.artifactoryRecorded }
+)
+if ($unarchivedPackages.Count -gt 0) {
+    $unarchivedNames = @(
+        $unarchivedPackages | ForEach-Object { "  $($_.kb) $($_.fileName)" }
+    ) -join "`r`n"
+    throw "The following required LCU packages are not confirmed in Artifactory:`r`n$unarchivedNames"
+}
+
+if ($null -ne $normalizedSsu -and -not [bool]$normalizedSsu['artifactoryRecorded']) {
+    throw "Windows 10 SSU $($normalizedSsu['kb']) is not confirmed in Artifactory; refusing to write manifest."
 }
 
 # -----------------------------------------------------------------------------

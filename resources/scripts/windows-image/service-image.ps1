@@ -314,6 +314,47 @@ else {
         )
     }
 
+    # The manifest must enumerate only known MSU roles. A required update
+    # must not be silently skipped or treated as an arbitrary package.
+    $invalidPackages = @(
+        $allPackages | Where-Object {
+            $packageRole = ([string]$_.type).ToLowerInvariant()
+            $packageExtension = [System.IO.Path]::GetExtension([string]$_.fileName)
+
+            ($packageRole -ne 'target' -and $packageRole -ne 'checkpoint') -or
+            $packageExtension -ine '.msu'
+        }
+    )
+
+    if ($invalidPackages.Count -gt 0) {
+        $invalidPackageText = @(
+            $invalidPackages | ForEach-Object {
+                "  type=$($_.type) kb=$($_.kb) file=$($_.fileName)"
+            }
+        ) -join "`r`n"
+
+        throw @"
+Windows 11 LCU manifest contains unsupported package entries.
+Every required package must be a target/checkpoint MSU.
+
+$invalidPackageText
+"@
+    }
+
+    $duplicateFileNames = @(
+        $allPackages |
+            Group-Object -Property fileName |
+            Where-Object { $_.Count -gt 1 }
+    )
+
+    if ($duplicateFileNames.Count -gt 0) {
+        $duplicateNames = @(
+            $duplicateFileNames | ForEach-Object { "  $($_.Name)" }
+        ) -join "`r`n"
+
+        throw "Windows 11 LCU manifest contains duplicate package filenames:`r`n$duplicateNames"
+    }
+
     # Verify all packages before mounting the WIM.
     foreach ($package in $allPackages) {
         [void](Verify-Package `
@@ -343,13 +384,109 @@ else {
 
     # Windows 11 24H2 checkpoint servicing:
     #
-    # Do NOT apply checkpoint MSUs individually.
-    # Keep them beside the target MSU in download\updates and invoke DISM
-    # against the target MSU. DISM discovers and applies the applicable
-    # prerequisite checkpoint package(s).
-    $targetPath = Join-Path `
-        $UpdatesDir `
-        $targetPackage.fileName
+    # Microsoft requires the checkpoint MSU(s) and target MSU to be in one
+    # folder with no unrelated files. download\updates is a persistent cache
+    # and can contain packages from other image builds, so stage the manifest's
+    # complete package set in a clean folder without modifying the download cache.
+    $servicingRoot = Join-Path $WorkRoot 'servicing'
+    $servicingPackageDir = Join-Path `
+        $servicingRoot `
+        "LCU-$($targetPackage.kb)"
+
+    if (Test-Path -LiteralPath $servicingPackageDir) {
+        Remove-Item `
+            -LiteralPath $servicingPackageDir `
+            -Recurse `
+            -Force
+    }
+
+    New-Item `
+        -ItemType Directory `
+        -Path $servicingPackageDir `
+        -Force | Out-Null
+
+    $expectedFileNames = @(
+        $allPackages | ForEach-Object { [string]$_.fileName }
+    )
+
+    foreach ($package in $allPackages) {
+        $fileName = [string]$package.fileName
+        $sourcePath = Join-Path $UpdatesDir $fileName
+        $stagedPath = Join-Path $servicingPackageDir $fileName
+
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw "Required LCU package is missing before staging: $sourcePath"
+        }
+
+        $sourceHash = (
+            Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
+
+        $expectedHash = ([string]$package.sha256).Trim().ToLowerInvariant()
+
+        if (
+            -not [string]::IsNullOrWhiteSpace($expectedHash) -and
+            $sourceHash -ne $expectedHash
+        ) {
+            throw @"
+Required LCU package checksum changed before staging.
+
+KB:       $($package.kb)
+File:     $fileName
+Expected: $expectedHash
+Actual:   $sourceHash
+"@
+        }
+
+        Copy-Item `
+            -LiteralPath $sourcePath `
+            -Destination $stagedPath `
+            -Force
+
+        $stagedHash = (
+            Get-FileHash -LiteralPath $stagedPath -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
+
+        if ($stagedHash -ne $sourceHash) {
+            throw "Staged package hash mismatch for '$fileName'. Source=$sourceHash Staged=$stagedHash"
+        }
+    }
+
+    # Confirm the folder contains exactly the manifest's MSUs and nothing else.
+    $stagedItems = @(Get-ChildItem -LiteralPath $servicingPackageDir -Force)
+
+    if ($stagedItems.Count -ne $expectedFileNames.Count) {
+        throw (
+            "Staged LCU package count mismatch. Expected $($expectedFileNames.Count), " +
+            "found $($stagedItems.Count) in '$servicingPackageDir'."
+        )
+    }
+
+    foreach ($item in $stagedItems) {
+        if ($item.PSIsContainer -or $expectedFileNames -notcontains $item.Name) {
+            throw "Unexpected item in isolated LCU servicing folder: $($item.FullName)"
+        }
+    }
+
+    foreach ($fileName in $expectedFileNames) {
+        if ($stagedItems.Name -notcontains $fileName) {
+            throw "Required package was not staged for DISM: $fileName"
+        }
+    }
+
+    $targetPath = Join-Path $servicingPackageDir $targetPackage.fileName
+
+    if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
+        throw "Target LCU package was not staged for DISM: $targetPath"
+    }
+
+    Write-Host ''
+    Write-Host 'Isolated DISM package directory verified:'
+    Write-Host "  Directory: $servicingPackageDir"
+    Write-Host "  MSU count: $($stagedItems.Count)"
+    foreach ($item in $stagedItems) {
+        Write-Host "    $($item.Name) ($($item.Length) bytes)"
+    }
 
     $sequence += [pscustomobject]@{
         Type          = 'LCU'
