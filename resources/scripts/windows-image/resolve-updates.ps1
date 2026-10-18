@@ -742,7 +742,6 @@ function Get-CatalogRows {
         if ([string]::IsNullOrWhiteSpace($rowHtml)) {
             continue
         }
-
         # ---------------------------------------------------------------------
         # Convert HTML row to searchable text
         # ---------------------------------------------------------------------
@@ -786,6 +785,14 @@ function Get-CatalogRows {
         ).Trim()
 
         if ([string]::IsNullOrWhiteSpace($rowText)) {
+            continue
+        }
+
+        # Exclude .NET Framework updates from Windows OS LCU selection.
+        if (
+            $ExpectedType -eq 'LCU' -and
+            $rowText -match '(?i)\.NET Framework|Cumulative Update for \.NET'
+        ) {
             continue
         }
 
@@ -1815,6 +1822,12 @@ function Resolve-PackageFile {
                 -ErrorAction SilentlyContinue
         }
 
+        $jfArtifactoryUrl = $ArtifactoryBaseUrl.TrimEnd('/')
+
+        if ($jfArtifactoryUrl -notmatch '(?i)/artifactory$') {
+            $jfArtifactoryUrl = "$jfArtifactoryUrl/artifactory"
+        }
+
         $jfArgs = @(
             'rt'
             'download'
@@ -1822,7 +1835,7 @@ function Resolve-PackageFile {
             $temporaryPath
             '--flat=true'
             '--threads=4'
-            "--url=$ArtifactoryBaseUrl"
+            "--url=$jfArtifactoryUrl"
         )
 
         if (-not [string]::IsNullOrWhiteSpace($ArtifactoryToken)) {
