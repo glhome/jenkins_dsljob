@@ -709,13 +709,39 @@ function Get-ArtifactoryUpdateRecord {
             )
         }
 
+        # JFrog CLI JSON search output is not guaranteed to include a `name`
+        # field in every CLI/server combination. The documented default result
+        # can contain only `path`, `type`, `size`, dates and checksums. Read
+        # fields through PSObject.Properties to remain compatible with
+        # Set-StrictMode, and derive the filename from `path` when needed.
         $matchingRecords = @(
-            $records | Where-Object {
-                $recordName = [string]$_.name
-                if ([string]::IsNullOrWhiteSpace($recordName)) {
-                    $recordName = [System.IO.Path]::GetFileName([string]$_.path)
+            foreach ($record in $records) {
+                if ($null -eq $record) {
+                    continue
                 }
-                $recordName -eq $expectedName
+
+                $recordName = ''
+                $nameProperty = $record.PSObject.Properties['name']
+                if ($null -ne $nameProperty -and $null -ne $nameProperty.Value) {
+                    $recordName = [string]$nameProperty.Value
+                }
+
+                $recordPath = ''
+                $pathProperty = $record.PSObject.Properties['path']
+                if ($null -ne $pathProperty -and $null -ne $pathProperty.Value) {
+                    $recordPath = [string]$pathProperty.Value
+                }
+
+                if ([string]::IsNullOrWhiteSpace($recordName) -and
+                    -not [string]::IsNullOrWhiteSpace($recordPath)) {
+                    $recordName = [System.IO.Path]::GetFileName(
+                        $recordPath.Replace('/', '\').TrimEnd('\')
+                    )
+                }
+
+                if ($recordName -eq $expectedName) {
+                    $record
+                }
             }
         )
 
@@ -730,9 +756,14 @@ function Get-ArtifactoryUpdateRecord {
             throw "Artifactory search for exact artifact '$artifact' returned $($matchingRecords.Count) matching files; refusing an ambiguous record."
         }
 
-        $remoteSha256 = ([string]$matchingRecords[0].sha256).Trim().ToLowerInvariant()
+        $sha256Property = $matchingRecords[0].PSObject.Properties['sha256']
+        $remoteSha256 = ''
+        if ($null -ne $sha256Property -and $null -ne $sha256Property.Value) {
+            $remoteSha256 = ([string]$sha256Property.Value).Trim().ToLowerInvariant()
+        }
+
         if ($remoteSha256 -notmatch '^[0-9a-f]{64}$') {
-            throw "Artifactory artifact '$artifact' exists but did not return a usable SHA256. Refusing to overwrite an unverifiable record."
+            throw "Artifactory artifact '$artifact' exists but the search response did not include a usable SHA256. The artifact is not considered verified. Check jf rt search --include fields and the Artifactory/CLI version."
         }
 
         return [pscustomobject]@{
@@ -2440,9 +2471,31 @@ function Resolve-Windows11Lcu {
             throw "Microsoft Catalog package set contains a null package for target $targetKb."
         }
 
-        $packageKb = [string]$package.KB
-        $fileName = [string]$package.FileName
-        $url = [string]$package.Url
+        # Catalog package objects can vary across resolver paths. Do not
+        # dereference optional properties under StrictMode without checking.
+        # The filename is recoverable from the authoritative download URL.
+        $packageProperties = @($package.PSObject.Properties.Name)
+
+        $packageKb = ''
+        if ($packageProperties -contains 'KB') {
+            $packageKb = [string]$package.PSObject.Properties['KB'].Value
+        }
+
+        $fileName = ''
+        if ($packageProperties -contains 'FileName') {
+            $fileName = [string]$package.PSObject.Properties['FileName'].Value
+        }
+
+        $url = ''
+        if ($packageProperties -contains 'Url') {
+            $url = [string]$package.PSObject.Properties['Url'].Value
+        }
+
+        if ([string]::IsNullOrWhiteSpace($fileName) -and
+            -not [string]::IsNullOrWhiteSpace($url)) {
+            $fileName = Get-UrlFileName -Url $url
+            Write-Host "Catalog package omitted FileName; derived '$fileName' from its download URL."
+        }
 
         if ([string]::IsNullOrWhiteSpace($packageKb)) {
             throw @"
@@ -2523,17 +2576,63 @@ Target: $targetKb
             }
         }
 
+        # Resolve-PackageFile must return a complete package record. Inspect
+        # its shape safely so a missing field reports the contract violation
+        # clearly instead of causing a generic StrictMode property error.
+        $resolvedProperties = @($resolvedPackage.PSObject.Properties.Name)
+        $requiredResolvedProperties = @(
+            'Url', 'ArtifactPath', 'LocalPath',
+            'Sha256', 'Source', 'ArtifactoryRecorded'
+        )
+        $missingResolvedProperties = @(
+            $requiredResolvedProperties | Where-Object {
+                $resolvedProperties -notcontains $_
+            }
+        )
+        if ($missingResolvedProperties.Count -gt 0) {
+            throw @"
+Resolve-PackageFile returned an incomplete record for $packageKb.
+Missing properties: $($missingResolvedProperties -join ', ')
+Returned properties: $($resolvedProperties -join ', ')
+Catalog filename: $fileName
+Catalog URL: $url
+"@
+        }
+
+        # FileName is recoverable from the Catalog URL and was validated
+        # before resolution, so tolerate a result object that omits only this
+        # convenience field while preserving the rest of the archive checks.
+        $resolvedFileName = $fileName
+        if ($resolvedProperties -contains 'FileName') {
+            $candidateFileName = [string]$resolvedPackage.PSObject.Properties['FileName'].Value
+            if (-not [string]::IsNullOrWhiteSpace($candidateFileName)) {
+                $resolvedFileName = $candidateFileName
+            }
+        }
+        if ($resolvedFileName -ne $fileName) {
+            throw "Resolved filename mismatch for $packageKb. Catalog='$fileName'; resolver='$resolvedFileName'."
+        }
+
         $resolvedPackageObject = [pscustomobject]@{
-            Type         = $packageType
-            KB           = $packageKb
-            FileName     = $resolvedPackage.FileName
-            Url          = $resolvedPackage.Url
-            ArtifactPath = $resolvedPackage.ArtifactPath
-            LocalPath    = $resolvedPackage.LocalPath
-            Sha256                = $resolvedPackage.Sha256
-            Source                = $resolvedPackage.Source
-            ArtifactoryRecorded   = [bool]$resolvedPackage.ArtifactoryRecorded
-            UpdateId              = $package.UpdateId
+            Type                = $packageType
+            KB                  = $packageKb
+            FileName            = $resolvedFileName
+            Url                 = [string]$resolvedPackage.PSObject.Properties['Url'].Value
+            ArtifactPath        = [string]$resolvedPackage.PSObject.Properties['ArtifactPath'].Value
+            LocalPath           = [string]$resolvedPackage.PSObject.Properties['LocalPath'].Value
+            Sha256              = [string]$resolvedPackage.PSObject.Properties['Sha256'].Value
+            Source              = [string]$resolvedPackage.PSObject.Properties['Source'].Value
+            ArtifactoryRecorded = [bool]$resolvedPackage.PSObject.Properties['ArtifactoryRecorded'].Value
+            UpdateId            = if ($packageProperties -contains 'UpdateId') {
+                [string]$package.PSObject.Properties['UpdateId'].Value
+            }
+            else {
+                ''
+            }
+        }
+
+        if (-not $resolvedPackageObject.ArtifactoryRecorded) {
+            throw "Package $packageKb ($resolvedFileName) was resolved locally but its Artifactory record was not verified. Refusing to continue."
         }
 
         # Normal PowerShell array append.
