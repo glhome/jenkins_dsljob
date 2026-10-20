@@ -2164,9 +2164,14 @@ function Resolve-PackageFile {
         Write-Host "  Destination: $localPath"
         Write-Host "  JFrog:       $JfPath $($safeJfArgs -join ' ')"
 
-        & $JfPath @jfArgs
-
+        $jfOutput = @(& $JfPath @jfArgs 2>&1)
         $jfExitCode = $LASTEXITCODE
+
+        foreach ($jfLine in $jfOutput) {
+            if ($null -ne $jfLine) {
+                Write-Host ([string]$jfLine)
+            }
+        }
 
         if (
             $jfExitCode -eq 0 -and
