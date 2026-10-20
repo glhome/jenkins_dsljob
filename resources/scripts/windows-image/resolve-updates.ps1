@@ -2164,13 +2164,60 @@ function Resolve-PackageFile {
         Write-Host "  Destination: $localPath"
         Write-Host "  JFrog:       $JfPath $($safeJfArgs -join ' ')"
 
-        $jfOutput = @(& $JfPath @jfArgs 2>&1)
-        $jfExitCode = $LASTEXITCODE
+        # Windows PowerShell 5.1 can promote native stderr output to a
+        # NativeCommandError when ErrorActionPreference is Stop. Do not use
+        # 2>&1 here: JFrog emits progress/info messages on stderr even for
+        # successful commands. Redirect both streams to files and inspect the
+        # process exit code separately so output cannot pollute this function's
+        # success stream or abort before $LASTEXITCODE is captured.
+        $jfLogRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("jf-download-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path $jfLogRoot | Out-Null
+        $jfStdoutFile = Join-Path $jfLogRoot 'stdout.log'
+        $jfStderrFile = Join-Path $jfLogRoot 'stderr.log'
 
-        foreach ($jfLine in $jfOutput) {
-            if ($null -ne $jfLine) {
-                Write-Host ([string]$jfLine)
+        try {
+            $jfArgumentLine = (
+                $jfArgs | ForEach-Object {
+                    ConvertTo-WindowsProcessArgument -Argument ([string]$_)
+                }
+            ) -join ' '
+
+            $jfProcess = Start-Process `
+                -FilePath $JfPath `
+                -ArgumentList $jfArgumentLine `
+                -Wait `
+                -PassThru `
+                -NoNewWindow `
+                -RedirectStandardOutput $jfStdoutFile `
+                -RedirectStandardError $jfStderrFile
+
+            $jfExitCode = [int]$jfProcess.ExitCode
+
+            $jfStdout = ''
+            $jfStderr = ''
+            if (Test-Path -LiteralPath $jfStdoutFile -PathType Leaf) {
+                $jfStdout = [string](Get-Content -LiteralPath $jfStdoutFile -Raw -ErrorAction SilentlyContinue)
             }
+            if (Test-Path -LiteralPath $jfStderrFile -PathType Leaf) {
+                $jfStderr = [string](Get-Content -LiteralPath $jfStderrFile -Raw -ErrorAction SilentlyContinue)
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($jfStdout)) {
+                Write-Host $jfStdout.TrimEnd()
+            }
+            if (-not [string]::IsNullOrWhiteSpace($jfStderr)) {
+                Write-Host $jfStderr.TrimEnd()
+            }
+
+            if ($jfExitCode -ne 0) {
+                Write-Warning "JFrog download failed with exit code $jfExitCode. Detailed stdout/stderr retained at: $jfLogRoot"
+            }
+            else {
+                Remove-Item -LiteralPath $jfLogRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+            throw "Unable to execute JFrog download for '$fileName'. Detailed stdout/stderr, if created, are at '$jfLogRoot'. $($_.Exception.Message)"
         }
 
         if (
