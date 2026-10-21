@@ -150,6 +150,9 @@ catch {
             '''
 $ErrorActionPreference = 'Stop'
 
+Write-Host "DEBUG WINDOWS PROFILE: __PROFILE__"
+Write-Host "DEBUG WORK ROOT: __WORK_ROOT__"
+
 & '__DOWNLOAD_SCRIPT_PATH__' `
     -WorkRoot '__WORK_ROOT__' `
     -BaseIsoArtifact '__BASE_ISO_ARTIFACT__' `
