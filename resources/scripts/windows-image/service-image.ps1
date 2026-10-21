@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$WorkRoot,
@@ -99,50 +99,85 @@ function Invoke-Dism {
 }
 
 # ---------------------------------------------------------------------------
-# Cleanup stale mounts
+# Mount-state inspection and recovery
 # ---------------------------------------------------------------------------
 
-Write-Host ''
-Write-Host 'Checking existing WIM mounts...'
-
-$mounted = & $DismExe /English /Get-MountedWimInfo 2>&1
-
-if ($LASTEXITCODE -ne 0) {
-    throw 'DISM /Get-MountedWimInfo failed.'
-}
-
-$mountedText = $mounted -join "`n"
-
-Write-Host $mountedText
-
-if ($mountedText -match [regex]::Escape($MountDir)) {
-
-    Write-Host ''
-    Write-Host 'Existing mount found for this workspace.'
-    Write-Host 'Discarding it before servicing.'
-
-    & $DismExe `
-        /Unmount-Wim `
-        /MountDir:$MountDir `
-        /Discard
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning 'Unmount /Discard failed; attempting Cleanup-Wim.'
-
-        & $DismExe /Cleanup-Wim
-
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Unable to clean stale WIM mount.'
+function Get-MountedWimRecords {
+    $output = & $DismExe /English /Get-MountedWimInfo 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) { throw "DISM /Get-MountedWimInfo failed with exit code $exitCode." }
+    $text = ($output | ForEach-Object { [string]$_ }) -join "`n"
+    $records = @()
+    foreach ($block in [regex]::Split($text, '(?m)(?=^\s*Mount Dir\s*:)')) {
+        $m = [regex]::Match($block, '(?im)^\s*Mount Dir\s*:\s*(.+?)\s*$')
+        if (-not $m.Success) { continue }
+        $i = [regex]::Match($block, '(?im)^\s*Image File\s*:\s*(.+?)\s*$')
+        $n = [regex]::Match($block, '(?im)^\s*Image Index\s*:\s*(\d+)\s*$')
+        $s = [regex]::Match($block, '(?im)^\s*Status\s*:\s*(.+?)\s*$')
+        $records += [pscustomobject]@{
+            MountDir = [IO.Path]::GetFullPath($m.Groups[1].Value.Trim()).TrimEnd('\')
+            ImageFile = if ($i.Success) { [IO.Path]::GetFullPath($i.Groups[1].Value.Trim()) } else { '' }
+            ImageIndex = if ($n.Success) { [int]$n.Groups[1].Value } else { 0 }
+            Status = if ($s.Success) { $s.Groups[1].Value.Trim() } else { 'Unknown' }
         }
     }
+    return @($records)
 }
 
-& $DismExe /Cleanup-Wim
-
-if ($LASTEXITCODE -ne 0) {
-    throw 'DISM /Cleanup-Wim failed.'
+function Invoke-MountDism {
+    param([string]$Operation, [string[]]$Arguments)
+    Write-Host "Mount recovery: $Operation"
+    & $DismExe @Arguments
+    return ($LASTEXITCODE -eq 0)
 }
 
+function Ensure-CleanMountPoint {
+    $mount = [IO.Path]::GetFullPath($MountDir).TrimEnd('\')
+    $wim = [IO.Path]::GetFullPath($WimFile)
+    $records = @(Get-MountedWimRecords)
+    $atMount = @($records | Where-Object { $_.MountDir -ieq $mount })
+    $sameWim = @($records | Where-Object { $_.ImageFile -ieq $wim })
+    $other = @($sameWim | Where-Object { $_.MountDir -ine $mount })
+    if ($other.Count) { throw "Target WIM is already registered at another mount path; refusing concurrent mount." }
+    if ($atMount.Count -gt 1) { throw "Multiple DISM records exist for '$mount'; manual recovery required." }
+
+    if ($atMount.Count -eq 1) {
+        $record = $atMount[0]
+        if ($record.ImageFile -ine $wim -or $record.ImageIndex -ne $ImageIndex) {
+            throw "Mount path '$mount' belongs to a different WIM/index; refusing to discard it."
+        }
+        Write-Host "Existing mount status: $($record.Status)"
+        if ($record.Status -match '(?i)Needs Remount|Invalid|Unknown') {
+            [void](Invoke-MountDism 'Remount image' @('/Remount-Image', "/MountDir:$MountDir"))
+            $records = @(Get-MountedWimRecords)
+            $atMount = @($records | Where-Object { $_.MountDir -ieq $mount })
+            if (-not ($atMount.Count -eq 1 -and $atMount[0].Status -match '(?i)^OK$')) {
+                [void](Invoke-MountDism 'Cleanup mountpoints' @('/Cleanup-Mountpoints'))
+                $records = @(Get-MountedWimRecords)
+                $atMount = @($records | Where-Object { $_.MountDir -ieq $mount })
+                if ($atMount.Count) { throw "DISM still registers '$mount' after remount/cleanup. Refusing another Mount-Wim." }
+            }
+        }
+        $records = @(Get-MountedWimRecords)
+        $atMount = @($records | Where-Object { $_.MountDir -ieq $mount })
+        if ($atMount.Count -eq 1) {
+            if (-not (Invoke-MountDism 'Discard existing workspace mount' @('/Unmount-Wim', "/MountDir:$MountDir", '/Discard'))) {
+                throw "DISM could not discard '$MountDir'. Check open handles and C:\Windows\Logs\DISM\dism.log. No new mount will be attempted."
+            }
+            $records = @(Get-MountedWimRecords)
+            if (@($records | Where-Object { $_.MountDir -ieq $mount }).Count) { throw "DISM still registers '$mount' after unmount. Refusing another Mount-Wim." }
+        }
+    }
+
+    $records = @(Get-MountedWimRecords)
+    if (@($records | Where-Object { $_.MountDir -ieq $mount -or $_.ImageFile -ieq $wim }).Count) {
+        throw 'DISM still has a mount registered for the target WIM/workspace. Refusing Mount-Wim.'
+    }
+    if (-not (Test-Path -LiteralPath $MountDir -PathType Container)) { New-Item -ItemType Directory -Path $MountDir -Force | Out-Null }
+    $leftovers = @(Get-ChildItem -LiteralPath $MountDir -Force -ErrorAction Stop)
+    if ($leftovers.Count) { throw "Mount directory '$MountDir' is not empty although DISM has no mount record. Inspect it before deleting files." }
+    Write-Host 'Mount preflight passed: no registered mount and mount directory is empty.'
+}
 # ---------------------------------------------------------------------------
 # Load manifest
 # ---------------------------------------------------------------------------
@@ -500,6 +535,9 @@ Actual:   $sourceHash
 # Mount
 # ---------------------------------------------------------------------------
 
+# Never attempt a new mount until DISM confirms the prior mount is cleared.
+Ensure-CleanMountPoint
+
 Invoke-Dism `
     -Operation 'Mount WIM' `
     -Arguments @(
@@ -519,9 +557,9 @@ try {
     # Windows 10:
     #
     #     SSU
-    #      ↓
+    #      â†“
     #     verify SSU
-    #      ↓
+    #      â†“
     #     LCU
     #
     # Windows 11:
