@@ -3508,6 +3508,11 @@ elseif ($WindowsProfile -eq 'windows10-21h2') {
 
                     Write-Host ''
                     Write-Host "  Inspecting CAB: $($cab.Name)"
+                    # An embedded SSU revision is not the target LCU build revision.
+                    if ($cab.Name -match '(?i)^SSU-.*\.cab$') {
+                        Write-Host '  Skipping embedded SSU CAB for LCU build detection.'
+                        continue
+                    }
 
                     & $sevenZip `
                         'x' `

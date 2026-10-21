@@ -573,7 +573,8 @@ try {
 
         $packageText = $packageQuery -join "`n"
 
-        if ($package.Type -eq 'target') {
+        # if ($package.Type -eq 'target') {
+        if ($package.Type -eq 'LCU') {
 
     $expectedBuild = [string]$package.ExpectedBuild
 
