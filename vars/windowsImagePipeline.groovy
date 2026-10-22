@@ -9,7 +9,7 @@ def call(Map cfg = [:]) {
     def artifactoryRepo =
         cfg.artifactoryRepo ?: 'snapshot-generic-local'
 
-    def imageIndex =
+    def imageIndex = null
         cfg.imageIndex ?: 1
 
     def agentLabel =
@@ -186,11 +186,11 @@ Extract, Service, Create ISO and Generate Manifest are skipped.
             }
 
             stage('Extract Windows Image') {
-
-                windowsImageExtract(
+                imageIndex = windowsImageExtract(
                     workRoot: workRoot,
-                    imageIndex: imageIndex
+                    profile: profile
                 )
+                echo "Detected WIM image index for ${profile}: ${imageIndex}"
             }
 
             stage('Service Windows Image') {

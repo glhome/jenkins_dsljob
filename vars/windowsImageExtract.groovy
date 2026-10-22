@@ -1,4 +1,4 @@
-﻿def call(Map cfg = [:]) {
+def call(Map cfg = [:]) {
     def workRoot = cfg.workRoot
     def profile = cfg.profile
 
