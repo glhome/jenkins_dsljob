@@ -7,7 +7,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 git(
-                    branch: 'develop',
+                    branch: 'windows-image-online',
                     credentialsId: 'github-credentials',
                     url: 'https://github.com/glhome/jenkins_dsljob.git'
                 )
