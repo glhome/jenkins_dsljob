@@ -67,6 +67,7 @@ New-Item `
 # DISM wrapper
 # ---------------------------------------------------------------------------
 
+
 function Invoke-Dism {
     param(
         [Parameter(Mandatory = $true)]
@@ -78,21 +79,48 @@ function Invoke-Dism {
 
     Write-Host ''
     Write-Host '------------------------------------------------------------'
-    Write-Host "DISM: $Operation"
+    Write-Host "DISM operation: $Operation"
+    Write-Host "Executable: $DismExe"
+    Write-Host "Arguments: $($Arguments -join ' ')"
     Write-Host '------------------------------------------------------------'
 
-    Write-Host $DismExe
+    # Preserve diagnostics outside the temporary WIM mount.
+    $logRoot = Join-Path $WorkRoot 'logs\servicing'
+    New-Item -ItemType Directory -Path $logRoot -Force |
+        Out-Null
 
-    foreach ($arg in $Arguments) {
-        Write-Host "  $arg"
-    }
+    $safeName = $Operation -replace '[^a-zA-Z0-9._-]', '_'
+    $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+    $diagnosticLog = Join-Path $logRoot "$timestamp-$safeName.log"
 
-    & $DismExe @Arguments
-
+    # Capture both output streams and retain them if DISM fails.
+    $output = @(& $DismExe @Arguments 2>&1)
     $code = $LASTEXITCODE
 
+    $outputText = ($output | ForEach-Object {
+        [string]$_
+    }) -join "`r`n"
+
+    @(
+        "Timestamp: $(Get-Date -Format o)"
+        "Operation: $Operation"
+        "ExitCode: $code"
+        "Executable: $DismExe"
+        "Arguments: $($Arguments -join ' ')"
+        ''
+        $outputText
+    ) | Set-Content -LiteralPath $diagnosticLog -Encoding UTF8
+
+    Write-Host "DISM exit code: $code"
+    Write-Host "Diagnostic output: $diagnosticLog"
+
     if ($code -ne 0) {
-        throw "DISM operation '$Operation' failed with exit code $code."
+        Write-Host 'Last DISM output lines:'
+        $output | Select-Object -Last 40 | ForEach-Object {
+            Write-Host $_
+        }
+
+        throw "DISM operation '$Operation' failed with exit code $code. Diagnostic output: $diagnosticLog"
     }
 
     Write-Host "DISM '$Operation' completed successfully."
