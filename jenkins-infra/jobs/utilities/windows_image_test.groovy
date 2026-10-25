@@ -1,4 +1,4 @@
-pipelineJob('utilities/windows-image-test') {
+pipelineJob('managed/utilities/windows-image-test') {
 
     description(
         '''

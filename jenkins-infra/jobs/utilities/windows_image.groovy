@@ -1,4 +1,4 @@
-pipelineJob('utilities/windows-image') {
+pipelineJob('managed/utilities/windows-image') {
     description('Builds a serviced Windows ISO from an immutable Artifactory base ISO using a Windows image profile.')
     logRotator { numToKeep(20); daysToKeep(30) }
     parameters {
