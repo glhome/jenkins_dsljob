@@ -219,6 +219,70 @@ if (-not $manifest) {
     throw 'resolved-updates.json is empty.'
 }
 
+# -----------------------------------------------------------------------------
+# Validate profile-driven servicing plan
+# -----------------------------------------------------------------------------
+
+if ([string]$manifest.schemaVersion -ne '1.5') {
+    throw "Unsupported manifest schema version '$($manifest.schemaVersion)'. Expected 1.5."
+}
+
+if (-not $manifest.servicingPlan -or
+    @($manifest.servicingPlan).Count -eq 0) {
+    throw 'Manifest has no servicingPlan.'
+}
+
+$servicingPlan = @(
+    $manifest.servicingPlan |
+        Sort-Object -Property applyOrder
+)
+
+$previousOrder = 0
+
+foreach ($step in $servicingPlan) {
+    if ([string]::IsNullOrWhiteSpace([string]$step.name)) {
+        throw 'Manifest servicing plan contains a step without a name.'
+    }
+
+    if ([int]$step.applyOrder -le $previousOrder) {
+        throw "Manifest servicing plan has duplicate or invalid order at '$($step.name)'."
+    }
+
+    $previousOrder = [int]$step.applyOrder
+}
+
+if ($manifest.profile -eq 'windows10-21h2') {
+    if ($servicingPlan.Count -ne 2 -or
+        $servicingPlan[0].name -ne 'SSU' -or
+        $servicingPlan[1].name -ne 'LCU') {
+        throw 'Windows 10 manifest plan must apply SSU before LCU.'
+    }
+
+    if (-not $manifest.ssu -or -not $manifest.lcu.msu) {
+        throw 'Windows 10 manifest is missing its required SSU or LCU.'
+    }
+}
+elseif ($manifest.profile -eq 'windows11-24h2') {
+    if ($servicingPlan.Count -ne 1 -or
+        $servicingPlan[0].name -ne 'LCU' -or
+        $servicingPlan[0].kind -ne 'LcuPackageSet') {
+        throw 'Windows 11 manifest plan must contain one LCU package-set step.'
+    }
+
+    if (-not $manifest.lcu.packages) {
+        throw 'Windows 11 manifest is missing its LCU package set.'
+    }
+}
+else {
+    throw "Unsupported Windows image profile '$($manifest.profile)'."
+}
+
+Write-Host 'Validated servicing plan:'
+
+foreach ($step in $servicingPlan) {
+    Write-Host "  $($step.applyOrder): $($step.name) [$($step.kind)]"
+}
+
 Write-Host ''
 Write-Host 'Resolved update manifest:'
 Write-Host ($manifest | ConvertTo-Json -Depth 20)
@@ -554,7 +618,7 @@ Actual:   $sourceHash
     $sequence += [pscustomobject]@{
         Type          = 'LCU'
         KB            = [string]$targetPackage.kb
-        Path          = $targetPath
+        Path          = $servicingPackageDir
         ExpectedBuild = [string]$manifest.build
     }
 }

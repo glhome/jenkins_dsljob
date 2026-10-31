@@ -23,8 +23,20 @@ function Get-WindowsImageProfile {
                 IsoPrefix      = 'Windows11-24H2'
                 BaseIsoArtifact = 'Windows11/24H2/x64/base/en-us_windows_11_iot_enterprise_version_24h2_x64_dvd_3a99b72b.iso'
                 BaseIsoSha256   = 'eceb8dc167077e07f9a9bd04e472ea542944974b81b2ebc25477772a71bdbb69'
+
+                # Windows 11: apply checkpoint and target LCU packages together.
+                ServicingPlan = @(
+                    [pscustomobject]@{
+                        Name         = 'LCU'
+                        Kind         = 'LcuPackageSet'
+                        ApplyOrder   = 10
+                        Required     = $true
+                        PackageTypes = @('checkpoint', 'target')
+                    }
+                )
             }
         }
+
         'windows10-21h2' {
             [pscustomobject]@{
                 Name           = 'windows10-21h2'
@@ -41,8 +53,27 @@ function Get-WindowsImageProfile {
                 IsoPrefix      = 'Windows10-21H2'
                 BaseIsoArtifact = 'Windows10/21H2/x64/base/en-us_windows_10_iot_enterprise_ltsc_2021_x64_dvd_257ad90f.iso'
                 BaseIsoSha256   = 'a0334f31ea7a3e6932b9ad7206608248f0bd40698bfb8fc65f14fc5e4976c160'
+
+                # Windows 10: apply standalone SSU before the LCU.
+                ServicingPlan = @(
+                    [pscustomobject]@{
+                        Name         = 'SSU'
+                        Kind         = 'SinglePackage'
+                        ManifestPath = 'ssu'
+                        ApplyOrder   = 10
+                        Required     = $true
+                    },
+                    [pscustomobject]@{
+                        Name         = 'LCU'
+                        Kind         = 'SinglePackage'
+                        ManifestPath = 'lcu.msu'
+                        ApplyOrder   = 20
+                        Required     = $true
+                    }
+                )
             }
         }
+
         default {
             throw "Unknown Windows image profile '$Name'. Supported profiles: windows11-24h2, windows10-21h2"
         }

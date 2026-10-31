@@ -9,8 +9,7 @@ def call(Map cfg = [:]) {
     def artifactoryRepo =
         cfg.artifactoryRepo ?: 'snapshot-generic-local'
 
-    def imageIndex = null
-        cfg.imageIndex ?: 1
+    def imageIndex = cfg.imageIndex
 
     def agentLabel =
         cfg.agentLabel ?: 'windows-image-builder'
@@ -191,6 +190,19 @@ Extract, Service, Create ISO and Generate Manifest are skipped.
                     profile: profile
                 )
                 echo "Detected WIM image index for ${profile}: ${imageIndex}"
+            }
+
+            stage('Resolve Prerequisites') {
+
+                windowsImageResolvePrerequisites(
+                    workRoot: workRoot,
+                    profile: profile,
+                    architecture: architecture,
+                    imageIndex: imageIndex,
+                    artifactoryBaseUrl: artifactoryBaseUrl,
+                    artifactoryRepo: artifactoryRepo,
+                    artifactTransferMethod: params.ARTIFACT_TRANSFER_METHOD
+                )
             }
 
             stage('Service Windows Image') {

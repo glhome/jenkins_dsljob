@@ -39,7 +39,13 @@ param(
     [switch]$ForceMicrosoftDownload,
 
     [Parameter(Mandatory = $false)]
-    [switch]$ResolveOnly
+    [switch]$ResolveOnly,
+
+    [Parameter(Mandatory = $false)]
+    [int]$ImageIndex = 0,
+
+    [Parameter(Mandatory = $false)]
+    [string]$InstalledPackageInventoryFile = ''
 )
 
 
@@ -100,6 +106,16 @@ if ($null -eq $imageProfile) {
 }
 
 Write-Host "Loaded image profile: $WindowsProfile"
+
+$installedPackageInventory = @()
+if (-not [string]::IsNullOrWhiteSpace($InstalledPackageInventoryFile)) {
+    if (-not (Test-Path -LiteralPath $InstalledPackageInventoryFile -PathType Leaf)) {
+        throw "Installed package inventory file not found: $InstalledPackageInventoryFile"
+    }
+    $inventoryJson = Get-Content -LiteralPath $InstalledPackageInventoryFile -Raw | ConvertFrom-Json
+    $installedPackageInventory = @($inventoryJson.packages)
+    if ($ImageIndex -lt 1) { throw 'ImageIndex must be supplied with an installed package inventory.' }
+}
 
 # -----------------------------------------------------------------------------
 # Generic profile property helper
@@ -3901,13 +3917,77 @@ if ($null -ne $normalizedSsu -and -not [bool]$normalizedSsu['artifactoryRecorded
 }
 
 # -----------------------------------------------------------------------------
+# Profile-driven servicing plan
+# -----------------------------------------------------------------------------
+
+if (-not $imageProfile.ServicingPlan) {
+    throw "Profile '$WindowsProfile' does not define ServicingPlan."
+}
+
+$normalizedServicingPlan = @(
+    $imageProfile.ServicingPlan |
+        Sort-Object -Property ApplyOrder |
+        ForEach-Object {
+            $step = $_
+
+            if ([string]::IsNullOrWhiteSpace([string]$step.Name)) {
+                throw "Profile '$WindowsProfile' has a servicing step without Name."
+            }
+
+            if ([int]$step.ApplyOrder -le 0) {
+                throw "Servicing step '$($step.Name)' has an invalid ApplyOrder."
+            }
+
+            $normalizedStep = [ordered]@{
+                name       = [string]$step.Name
+                kind       = [string]$step.Kind
+                applyOrder = [int]$step.ApplyOrder
+                required   = [bool]$step.Required
+            }
+
+            if ($step.ManifestPath) {
+                $normalizedStep.manifestPath = [string]$step.ManifestPath
+            }
+
+            if ($step.PackageTypes) {
+                $normalizedStep.packageTypes = @(
+                    $step.PackageTypes | ForEach-Object { [string]$_ }
+                )
+            }
+
+            [pscustomobject]$normalizedStep
+        }
+)
+
+if ($WindowsProfile -eq 'windows10-21h2') {
+    if ($normalizedServicingPlan.Count -ne 2 -or
+        $normalizedServicingPlan[0].name -ne 'SSU' -or
+        $normalizedServicingPlan[1].name -ne 'LCU') {
+        throw 'Windows 10 servicing plan must contain SSU followed by LCU.'
+    }
+
+    if ($null -eq $normalizedSsu) {
+        throw 'Windows 10 servicing plan requires an SSU, but no SSU was resolved.'
+    }
+}
+elseif ($WindowsProfile -eq 'windows11-24h2') {
+    if ($normalizedServicingPlan.Count -ne 1 -or
+        $normalizedServicingPlan[0].name -ne 'LCU' -or
+        $normalizedServicingPlan[0].kind -ne 'LcuPackageSet') {
+        throw 'Windows 11 servicing plan must contain one LCU package-set step.'
+    }
+}
+
+# -----------------------------------------------------------------------------
 # Canonical manifest.
 # -----------------------------------------------------------------------------
 
 $manifest = [ordered]@{
-    schemaVersion = '1.4'
+    schemaVersion = '1.5'
 
     profile       = [string]$WindowsProfile
+    imageIndex    = $(if ($ImageIndex -gt 0) { $ImageIndex } else { $null })
+    installedPackageInventory = @($installedPackageInventory)
     product       = [string]$Product
     release       = [string]$Release
     architecture = [string]$Architecture
@@ -3931,6 +4011,7 @@ $manifest = [ordered]@{
     ssuIncluded     = ($null -ne $resolvedSsu)
 
     ssu           = $normalizedSsu
+    servicingPlan = @($normalizedServicingPlan)
 
     lcu           = [ordered]@{
         type      = 'LCU'
