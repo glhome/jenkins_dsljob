@@ -3945,13 +3945,22 @@ $normalizedServicingPlan = @(
                 required   = [bool]$step.Required
             }
 
-            if ($step.ManifestPath) {
-                $normalizedStep.manifestPath = [string]$step.ManifestPath
+            $manifestPathProperty = $step.PSObject.Properties['ManifestPath']
+
+            if ($null -ne $manifestPathProperty -and
+                -not [string]::IsNullOrWhiteSpace([string]$manifestPathProperty.Value)) {
+
+                $normalizedStep.manifestPath = [string]$manifestPathProperty.Value
             }
 
-            if ($step.PackageTypes) {
+            $packageTypesProperty = $step.PSObject.Properties['PackageTypes']
+
+            if ($null -ne $packageTypesProperty -and
+                $null -ne $packageTypesProperty.Value) {
+
                 $normalizedStep.packageTypes = @(
-                    $step.PackageTypes | ForEach-Object { [string]$_ }
+                    $packageTypesProperty.Value |
+                        ForEach-Object { [string]$_ }
                 )
             }
 
