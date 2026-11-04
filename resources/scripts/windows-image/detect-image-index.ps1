@@ -69,7 +69,7 @@ switch ($Profile) {
         $pattern = '^Windows\s+10\s+IoT\s+Enterprise\s+LTSC(?:\s|,|$)'
     }
     'windows11-24h2' {
-        $pattern = '^Windows\s+11\s+IoT\s+Enterprise(?:\s|,|$)'
+        $pattern = '^Windows\s+11\s+IoT\s+Enterprise$'
     }
 }
 
