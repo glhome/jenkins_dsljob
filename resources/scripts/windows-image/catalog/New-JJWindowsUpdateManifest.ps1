@@ -74,15 +74,50 @@ function Get-Prop {
 }
 
 function Get-TitleDate {
-    param([string]$Title, [object]$Item)
-    # Prefer an explicit release/publication date; LastUpdated is only a fallback.
-    $v = Get-Prop $Item @('ReleaseDate','DateReleased','PublishedDate')
-    if ($v) { try { return ([datetime]$v).Date } catch {} }
-    if ($Title -match '^(?<y>20\d{2})-(?<m>0[1-9]|1[0-2])') {
-        return [datetime]::new([int]$Matches.y,[int]$Matches.m,1)
+    param(
+        [string]$Title,
+        [object]$Item
+    )
+
+    # 1. Prefer the actual Catalog release/publication date.
+    $v = Get-Prop $Item @(
+        'ReleaseDate',
+        'DateReleased',
+        'PublishedDate'
+    )
+
+    if ($null -ne $v -and -not [string]::IsNullOrWhiteSpace([string]$v)) {
+        try {
+            return ([datetime]$v).Date
+        }
+        catch {}
     }
-    $v = Get-Prop $Item @('LastUpdated','CatalogDate')
-    if ($v) { try { return ([datetime]$v).Date } catch {} }
+
+    # 2. Extract a full YYYY-MM-DD date from the title.
+    if ($Title -match '(?<y>20\d{2})-(?<m>0[1-9]|1[0-2])-(?<d>0[1-9]|[12]\d|3[01])') {
+        try {
+            return [datetime]::new(
+                [int]$Matches.y,
+                [int]$Matches.m,
+                [int]$Matches.d
+            )
+        }
+        catch {}
+    }
+
+    # 3. Fallback to Catalog last-updated date.
+    $v = Get-Prop $Item @(
+        'LastUpdated',
+        'CatalogDate'
+    )
+
+    if ($null -ne $v -and -not [string]::IsNullOrWhiteSpace([string]$v)) {
+        try {
+            return ([datetime]$v).Date
+        }
+        catch {}
+    }
+
     return $null
 }
 
