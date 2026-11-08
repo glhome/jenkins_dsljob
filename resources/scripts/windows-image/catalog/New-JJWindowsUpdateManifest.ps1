@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     [ValidatePattern('^20\d{2}-(0[1-9]|1[0-2])$')]
     [string]$Month,
 
@@ -36,6 +36,11 @@ param(
     [switch]$DownloadPackages,
     [string]$DownloadRoot = (Join-Path $PWD 'catalog-downloads')
 )
+
+if ([string]::IsNullOrWhiteSpace($Month)) {
+    $Month = (Get-Date).ToString('yyyy-MM')
+    Write-Host "Month not specified. Using current month: $Month"
+}
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
