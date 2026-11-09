@@ -45,13 +45,39 @@ if ([string]::IsNullOrWhiteSpace($Month)) {
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# The profile file remains the source of truth for supported Windows releases.
-$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$profilesPath = Join-Path $scriptRoot '..\profiles.ps1'
-if (-not (Test-Path -LiteralPath $profilesPath -PathType Leaf)) {
-    throw "profiles.ps1 not found: $profilesPath"
+function Get-WindowsImageProfile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    switch ($Name.ToLowerInvariant()) {
+        'windows10-21h2' {
+            [pscustomobject]@{
+                Name           = 'windows10-21h2'
+                Product        = 'Windows10'
+                WindowsVersion = 'Windows 10 21H2'
+                CatalogProductPattern = '(?i)Windows 10\s*,?\s*version 21H2'
+                CatalogBuildRequired  = $false
+                CatalogSecurityUpdatesRequired = $false
+                Release        = '21H2'
+                Build          = '19044'
+                BuildRegex     = '19044\.\d+'
+                CatalogQuery   = 'Windows 10 Version 21H2 cumulative update x64'
+                ArtifactRoot   = 'Windows10/21H2'
+                IsoPrefix      = 'Windows10-21H2'
+                BaseIsoArtifact = 'Windows10/21H2/x64/base/en-us_windows_10_iot_enterprise_ltsc_2021_x64_dvd_257ad90f.iso'
+                BaseIsoSha256   = 'a0334f31ea7a3e6932b9ad7206608248f0bd40698bfb8fc65f14fc5e4976c160'
+            }
+        }
+        default {
+            throw "Unknown Windows image profile '$Name'. Supported profiles: windows10-21h2"
+        }
+    }
 }
-. $profilesPath
+
+# The profile file remains the source of truth for supported Windows releases.
+
 $profileInfo = Get-WindowsImageProfile -Name $Profile
 
 if (-not (Get-Module -ListAvailable -Name OSD)) {
@@ -384,12 +410,20 @@ function New-OriginRecord {
 }
 
 function Get-ArtifactUrl {
-    param([string]$FileName,[string]$FallbackUrl)
-    if ([string]::IsNullOrWhiteSpace($ArtifactBaseUrl)) { return $FallbackUrl }
+    param([string]$FileName)
+
+    if ([string]::IsNullOrWhiteSpace($ArtifactBaseUrl)) {
+        throw 'ArtifactBaseUrl is required. Update dependencies must use the local J&J Artifactory URL.'
+    }
+
     $root = $ArtifactBaseUrl.TrimEnd('/')
     $sub = $ArtifactSubPath.Trim('/')
     $escaped = [uri]::EscapeDataString($FileName)
-    if ($sub) { return "$root/$sub/$escaped" }
+
+    if ($sub) {
+        return "$root/$sub/$escaped"
+    }
+
     return "$root/$escaped"
 }
 
@@ -406,7 +440,7 @@ function New-UpdateDependency {
         Value=[ordered]@{
             desc=$label
             tags=@('windows update','windows')
-            url=(Get-ArtifactUrl -FileName $file -FallbackUrl $Origin.url)
+            url=(Get-ArtifactUrl -FileName $file)
             origin=$Origin
         }
     }
