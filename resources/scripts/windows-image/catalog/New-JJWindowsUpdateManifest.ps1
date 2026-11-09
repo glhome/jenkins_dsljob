@@ -5,15 +5,13 @@ param(
     [string]$Month,
 
     [Parameter(Mandatory=$true)]
-    [ValidateSet('windows10-21h2','windows11-24h2')]
+    [ValidateSet('windows10-21h2')]
     [string]$Profile,
 
-    [Parameter(Mandatory=$true)]
     [string]$ImageUrl,
-
-    [Parameter(Mandatory=$true)]
-    [ValidateRange(1,20)]
-    [int]$ImageIndex,
+	# 0 means use the baseline manifest's image_index.
+	[ValidateRange(0,5)]
+	[int]$ImageIndex = 0,
 
     [string]$AdkUrl,
     [string]$AdkVersion,
@@ -451,6 +449,7 @@ function New-UpdateDependency {
 # a newer SSU. A replacement is resolved only when RequiredSsuKb is explicitly
 # supplied after prerequisite analysis confirms that the selected LCU needs it.
 $baselineSsu = $null
+$baselineManifest = $null
 if (-not [string]::IsNullOrWhiteSpace($BaselineManifestPath) -and
     (Test-Path -LiteralPath $BaselineManifestPath -PathType Leaf)) {
     try {
@@ -630,24 +629,83 @@ else {
     Write-Warning 'No ADK URL was supplied and no Windows ADK dependency was found in the baseline manifest.'
 }
 
+# Resolve base ISO URL and WIM image index.
+$baselineIso = $null
+
+if ($null -ne $baselineManifest) {
+    $baselineDeps = $baselineManifest.dependencies.deps
+
+    if ($null -ne $baselineDeps) {
+        $isoMatches = @(
+            foreach ($property in $baselineDeps.PSObject.Properties) {
+                if ($property.Name -match '^win/.+\.iso$') {
+                    [pscustomobject]@{
+                        Key   = $property.Name
+                        Value = $property.Value
+                    }
+                }
+            }
+        )
+
+        if ($isoMatches.Count -gt 1) {
+            throw "Baseline manifest contains multiple Windows ISO dependencies. Cannot determine which ISO to reuse."
+        }
+
+        if ($isoMatches.Count -eq 1) {
+            $baselineIso = $isoMatches[0]
+        }
+    }
+}
+
+# Explicit arguments take precedence over baseline values.
+$effectiveImageUrl = $ImageUrl
+
+if ([string]::IsNullOrWhiteSpace($effectiveImageUrl)) {
+    $effectiveImageUrl = [string](Get-Prop $baselineIso.Value @('url'))
+}
+
+if ([string]::IsNullOrWhiteSpace($effectiveImageUrl)) {
+    throw "ImageUrl was not supplied and no ISO URL was found in baseline manifest '$BaselineManifestPath'."
+}
+
+$effectiveImageIndex = $ImageIndex
+
+if ($effectiveImageIndex -eq 0) {
+    $baselineIndex = Get-Prop $baselineIso.Value @('image_index')
+
+    if ($null -eq $baselineIndex) {
+        throw "ImageIndex was not supplied and no image_index was found in the baseline ISO dependency."
+    }
+
+    $effectiveImageIndex = [int]$baselineIndex
+}
+
+if ($effectiveImageIndex -lt 1 -or $effectiveImageIndex -gt 20) {
+    throw "Invalid ImageIndex '$effectiveImageIndex'. Expected a value between 1 and 20."
+}
+
 $imageUri = $null
-if (-not [uri]::TryCreate($ImageUrl, [System.UriKind]::Absolute, [ref]$imageUri)) {
-    throw "ImageUrl must be a valid absolute HTTP(S) URL: $ImageUrl"
+if (-not [uri]::TryCreate($effectiveImageUrl, [System.UriKind]::Absolute, [ref]$imageUri)) {
+    throw "ImageUrl must be a valid absolute HTTP(S) URL: $effectiveImageUrl"
 }
+
 if ($imageUri.Scheme -notin @('http','https')) {
-    throw "ImageUrl must use HTTP or HTTPS: $ImageUrl"
+    throw "ImageUrl must use HTTP or HTTPS: $effectiveImageUrl"
 }
+
 $imageFileName = [Net.WebUtility]::UrlDecode([IO.Path]::GetFileName($imageUri.AbsolutePath))
+
 if ([string]::IsNullOrWhiteSpace($imageFileName)) {
-    throw "Could not determine ISO filename from ImageUrl: $ImageUrl"
+    throw "Could not determine ISO filename from ImageUrl: $effectiveImageUrl"
 }
+
 $isoKey = 'win/' + $imageFileName
 $deps[$isoKey] = [ordered]@{
     desc='Windows installation ISO file'
     tags=@('windows iso','windows image','windows')
     version=[string]$profileInfo.WindowsVersion + ' x64'
-    url=$ImageUrl
-    image_index=$ImageIndex
+    url=$effectiveImageUrl
+	image_index=$effectiveImageIndex
 }
 $updateDeps = [ordered]@{}
 if ($ssuDependency) {
