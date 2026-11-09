@@ -1,0 +1,107 @@
+﻿{
+    "$schema":  "jjv_manifest-v1.schema.json",
+    "desc":  "Tool to create updated Windows ISO with selected latest Windows updates",
+    "project":  "JJSVCommon",
+    "projectVersion":  "v1.0",
+    "repo":  "installwim_update",
+    "version":  "10_21H2/2026-10-26",
+    "components":  {
+
+                   },
+    "dependencies":  {
+                         "deps":  {
+                                      "Windows ADK":  {
+                                                          "desc":  "Portable Windows ADK created by JJV",
+                                                          "tags":  [
+                                                                       "windows adk",
+                                                                       "portable",
+                                                                       "jjv"
+                                                                   ],
+                                                          "version":  "Windows_ADK_10.1.26100.2454+Update_KB5101684-JJV",
+                                                          "url":  "https://artifactrepo.jnj.com/artifactory/tadh-generic-snapshot/third-parties/WindowsADK/10.1.26100.2454/Windows_ADK_10.1.26100.2454%2BUpdate_KB5101684-JJV.zip!/Windows_ADK_10.1.26100.2454%2BUpdate_KB5101684-JJV"
+                                                      },
+                                      "win/Windows 10 Enterprise LTSC 2021 x64.iso":  {
+                                                                                          "desc":  "Windows installation ISO file",
+                                                                                          "tags":  [
+                                                                                                       "windows iso",
+                                                                                                       "windows image",
+                                                                                                       "windows"
+                                                                                                   ],
+                                                                                          "version":  "Windows 10 Enterprise LTSC 2021 x64",
+                                                                                          "url":  "https://artifactrepo.jnj.com/artifactory/tadh-generic-snapshot/third-parties/Windows10EnterpriseLTSC21H2/X22-81260%20Win%2010%20IoT%20Enterprise%20LTSC%202021%2021H2%20x64%20English%20OPK.iso",
+                                                                                          "image_index":  2
+                                                                                      },
+                                      "win/updates":  {
+                                                          "ssu-19041.3562-x64_de23c91f483b2e609cec3e4a995639d13205f867.msu":  {
+                                                                                                                                  "desc":  "Windows update - SSU",
+                                                                                                                                  "tags":  [
+                                                                                                                                               "windows update",
+                                                                                                                                               "windows"
+                                                                                                                                           ],
+                                                                                                                                  "url":  "https://artifactrepo.jnj.com/artifactory/tadh-generic-snapshot/third-parties/Windows10EnterpriseLTSC21H2/Updates/ssu-19041.3562-x64_de23c91f483b2e609cec3e4a995639d13205f867.msu",
+                                                                                                                                  "origin":  {
+                                                                                                                                                 "file":  "ssu-19041.3562-x64_de23c91f483b2e609cec3e4a995639d13205f867.msu",
+                                                                                                                                                 "desc":  "2023-10 Servicing Stack Update for Windows 10 Version 21H2 for x64-based Systems (KB5031539)",
+                                                                                                                                                 "date":  "10/10/2023",
+                                                                                                                                                 "size_mb":  15.4,
+                                                                                                                                                 "id":  "4ab54529-a352-44ca-8b4f-5d13b4cf69b5",
+                                                                                                                                                 "arch":  "AMD64",
+                                                                                                                                                 "class":  "Security Updates",
+                                                                                                                                                 "url":  "https://catalog.s.download.windowsupdate.com/c/msdownload/update/software/secu/2023/10/ssu-19041.3562-x64_de23c91f483b2e609cec3e4a995639d13205f867.msu",
+                                                                                                                                                 "sha1":  "3iPJH0g7LmCc7D5KmVY50TIF+Gc=",
+                                                                                                                                                 "kb":  "5031539"
+                                                                                                                                             }
+                                                                                                                              },
+                                                          "2026-09_Cumulative_Update_for_Windows_10_Version_21H2_for_x64-based_Systems__KB5129236.msu":  {
+                                                                                                                                                             "url":  "https://artifactrepo.jnj.com/artifactory/tadh-generic-snapshot/third-parties/Windows10EnterpriseLTSC21H2/Updates/2026-09_Cumulative_Update_for_Windows_10_Version_21H2_for_x64-based_Systems__KB5129236.msu",
+                                                                                                                                                             "tags":  [
+                                                                                                                                                                          "windows update",
+                                                                                                                                                                          "windows"
+                                                                                                                                                                      ],
+                                                                                                                                                             "desc":  "Windows update - CU for Windows",
+                                                                                                                                                             "origin":  {
+                                                                                                                                                                            "url":  null,
+                                                                                                                                                                            "arch":  "AMD64",
+                                                                                                                                                                            "id":  "7814f4b1-d0e1-4384-90b6-b08ab397934c",
+                                                                                                                                                                            "date":  "09/01/2026",
+                                                                                                                                                                            "sha1":  null,
+                                                                                                                                                                            "kb":  "5129236",
+                                                                                                                                                                            "class":  "Updates",
+                                                                                                                                                                            "desc":  "2026-09 Cumulative Update for Windows 10 Version 21H2 for x64-based Systems (KB5129236)",
+                                                                                                                                                                            "size_mb":  896.3,
+                                                                                                                                                                            "file":  "2026-09_Cumulative_Update_for_Windows_10_Version_21H2_for_x64-based_Systems__KB5129236.msu"
+                                                                                                                                                                        }
+                                                                                                                                                         },
+                                                          "2026-09_Cumulative_Update_for_.NET_Framework_3.5_and_4.8_for_Windows_10_Version_21H2_for_x64__KB5126046.msu":  {
+                                                                                                                                                                              "url":  "https://artifactrepo.jnj.com/artifactory/tadh-generic-snapshot/third-parties/Windows10EnterpriseLTSC21H2/Updates/2026-09_Cumulative_Update_for_.NET_Framework_3.5_and_4.8_for_Windows_10_Version_21H2_for_x64__KB5126046.msu",
+                                                                                                                                                                              "tags":  [
+                                                                                                                                                                                           "windows update",
+                                                                                                                                                                                           "windows"
+                                                                                                                                                                                       ],
+                                                                                                                                                                              "desc":  "Windows update - CU for .NET",
+                                                                                                                                                                              "origin":  {
+                                                                                                                                                                                             "url":  null,
+                                                                                                                                                                                             "arch":  "AMD64",
+                                                                                                                                                                                             "id":  "0fa60993-a59c-414e-b201-304f63748cc6",
+                                                                                                                                                                                             "date":  "09/01/2026",
+                                                                                                                                                                                             "sha1":  null,
+                                                                                                                                                                                             "kb":  "5126046",
+                                                                                                                                                                                             "class":  "Security Updates",
+                                                                                                                                                                                             "desc":  "2026-09 Cumulative Update for .NET Framework 3.5 and 4.8 for Windows 10 Version 21H2 for x64 (KB5126046)",
+                                                                                                                                                                                             "size_mb":  78.1,
+                                                                                                                                                                                             "file":  "2026-09_Cumulative_Update_for_.NET_Framework_3.5_and_4.8_for_Windows_10_Version_21H2_for_x64__KB5126046.msu"
+                                                                                                                                                                                         }
+                                                                                                                                                                          }
+                                                      }
+                                  }
+                     },
+    "build":  {
+                  "id":  "",
+                  "git_url":  "",
+                  "git_commit":  "",
+                  "sha1.hex":  "",
+                  "url":  "",
+                  "date":  "0000-00-00T00:00:00Z",
+                  "output_dir":  "build/output"
+              }
+}
