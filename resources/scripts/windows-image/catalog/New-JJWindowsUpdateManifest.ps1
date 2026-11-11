@@ -18,7 +18,7 @@ param(
     [string]$ArtifactBaseUrl,
     [string]$ArtifactSubPath,
 
-    # Existing JJV manifest used as the source of truth for the SSU dependency.
+    # Existing JJV manifest used as the source of truth for unchanged dependencies.
     # Defaults to .\manifest.json in the current working directory.
     [string]$BaselineManifestPath = (Join-Path $PWD 'manifest.json'),
 
@@ -407,21 +407,80 @@ function New-OriginRecord {
     }
 }
 
+function Get-BaselineArtifactInfo {
+    # Derive the Artifactory repository root and update folder from an
+    # existing baseline update dependency URL.
+    if ($null -eq $baselineManifest) { return $null }
+
+    $updates = $baselineManifest.dependencies.deps.'win/updates'
+    if ($null -eq $updates) { return $null }
+
+    foreach ($property in $updates.PSObject.Properties) {
+        $url = [string](Get-Prop $property.Value @('url'))
+        if ([string]::IsNullOrWhiteSpace($url)) { continue }
+
+        $uri = $null
+        if (-not [uri]::TryCreate($url, [System.UriKind]::Absolute, [ref]$uri)) { continue }
+
+        $segments = @($uri.AbsolutePath.Trim('/').Split('/'))
+        $artifactoryIndex = -1
+        for ($i = 0; $i -lt ($segments.Count - 1); $i++) {
+            if ($segments[$i] -ieq 'artifactory') {
+                $artifactoryIndex = $i
+                break
+            }
+        }
+        # Expected layout: /artifactory/<repo>/<relative folders>/<filename>
+        if ($artifactoryIndex -lt 0 -or $artifactoryIndex + 1 -ge $segments.Count - 1) { continue }
+
+        $rootSegments = @($segments[0..($artifactoryIndex + 1)])
+        $rootPath = '/' + ($rootSegments -join '/')
+        $relativeSegments = @()
+        if ($artifactoryIndex + 2 -le $segments.Count - 2) {
+            $relativeSegments = @($segments[($artifactoryIndex + 2)..($segments.Count - 2)])
+        }
+
+        return [pscustomobject]@{
+            RepositoryRoot = $uri.GetLeftPart([System.UriPartial]::Authority) + $rootPath
+            RelativeDirectory = ($relativeSegments -join '/')
+        }
+    }
+
+    return $null
+}
+
 function Get-ArtifactUrl {
     param([string]$FileName)
 
-    if ([string]::IsNullOrWhiteSpace($ArtifactBaseUrl)) {
-        throw 'ArtifactBaseUrl is required. Update dependencies must use the local J&J Artifactory URL.'
+    if ([string]::IsNullOrWhiteSpace($FileName)) {
+        throw 'Cannot create an Artifactory URL without a package filename.'
     }
 
-    $root = $ArtifactBaseUrl.TrimEnd('/')
-    $sub = $ArtifactSubPath.Trim('/')
+    $baselineArtifact = Get-BaselineArtifactInfo
+    $root = if (-not [string]::IsNullOrWhiteSpace($ArtifactBaseUrl)) {
+        $ArtifactBaseUrl.TrimEnd('/')
+    } elseif ($baselineArtifact) {
+        $baselineArtifact.RepositoryRoot.TrimEnd('/')
+    } else {
+        $null
+    }
+
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        throw 'Could not determine the Artifactory repository root. Supply -ArtifactBaseUrl or provide a baseline update dependency URL.'
+    }
+
+    # Prefer the baseline update directory. ArtifactSubPath remains as a
+    # compatibility fallback for manifests without a usable update URL.
+    $relative = if ($baselineArtifact -and $baselineArtifact.RelativeDirectory) {
+        $baselineArtifact.RelativeDirectory.Trim('/')
+    } elseif (-not [string]::IsNullOrWhiteSpace($ArtifactSubPath)) {
+        $ArtifactSubPath.Trim('/')
+    } else {
+        ''
+    }
+
     $escaped = [uri]::EscapeDataString($FileName)
-
-    if ($sub) {
-        return "$root/$sub/$escaped"
-    }
-
+    if ($relative) { return "$root/$relative/$escaped" }
     return "$root/$escaped"
 }
 
@@ -450,6 +509,7 @@ function New-UpdateDependency {
 # supplied after prerequisite analysis confirms that the selected LCU needs it.
 $baselineSsu = $null
 $baselineManifest = $null
+$baselineVersion = $null
 if (-not [string]::IsNullOrWhiteSpace($BaselineManifestPath) -and
     (Test-Path -LiteralPath $BaselineManifestPath -PathType Leaf)) {
     try {
@@ -472,7 +532,13 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineManifestPath) -and
                 $entry = $property.Value
                 $origin = Get-Prop $entry @('origin')
                 $kb = [string](Get-Prop $origin @('kb'))
-                if ($kb -eq '5031539' -or $property.Name -match '(?i)^ssu[-_]') {
+                $originDesc = [string](Get-Prop $origin @('desc'))
+                $entryDesc = [string](Get-Prop $entry @('desc'))
+                $originKind = [string](Get-Prop $origin @('kind'))
+                if ($originKind -eq 'SSU' -or
+                    $property.Name -match '(?i)^ssu[-_]' -or
+                    $originDesc -match '(?i)Servicing Stack Update' -or
+                    $entryDesc -match '(?i)update\s*-\s*SSU') {
                     [pscustomobject]@{ Key=$property.Name; Value=$entry; KB=$kb }
                 }
             }
@@ -485,14 +551,15 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineManifestPath) -and
 }
 
 $ssuDependency = $null
+$ssuUpdated = $false
+
 if ($baselineSsu -and
     ([string]::IsNullOrWhiteSpace($RequiredSsuKb) -or $RequiredSsuKb -eq $baselineSsu.KB)) {
-    # Preserve the complete dependency object, including filename, URL,
-    # Catalog origin metadata, SHA-1 and KB, without querying Catalog.
+    # Preserve the baseline SSU dependency without modifying its metadata or URL.
     $ssuDependency = [pscustomobject]@{
-        Key=$baselineSsu.Key
-        Value=$baselineSsu.Value
-        KB=$baselineSsu.KB
+        Key   = $baselineSsu.Key
+        Value = $baselineSsu.Value
+        KB    = $baselineSsu.KB
     }
     Write-Host "Preserving baseline SSU KB$($baselineSsu.KB): $($baselineSsu.Key)"
 }
@@ -505,24 +572,31 @@ elseif (-not [string]::IsNullOrWhiteSpace($RequiredSsuKb)) {
         [pscustomobject]@{ Item=$item; Title=$title }
     }
     $ssuHits = @($ssuHits)
-    if ($ssuHits.Count -ne 1) {
-        throw "Required SSU KB$RequiredSsuKb was not resolved uniquely from Microsoft Update Catalog. Found $($ssuHits.Count) matches."
+
+    if ($ssuHits.Count -eq 0) {
+        Write-Host "No required SSU KB$RequiredSsuKb found. Preserving baseline SSU if available."
+        if ($baselineSsu) { $ssuDependency = $baselineSsu }
     }
-    $newSsuOrigin = New-OriginRecord -Item $ssuHits[0].Item -Kind 'SSU'
-    $newSsuDependency = New-UpdateDependency -Origin $newSsuOrigin -Kind 'SSU'
-    $ssuDependency = [pscustomobject]@{
-        Key=$newSsuDependency.Key
-        Value=$newSsuDependency.Value
-        KB=$RequiredSsuKb
+    elseif ($ssuHits.Count -gt 1) {
+        throw "Required SSU KB$RequiredSsuKb returned multiple Catalog matches. Found $($ssuHits.Count)."
     }
-    Write-Host "Using explicitly required SSU KB$RequiredSsuKb."
+    else {
+        $newSsuOrigin = New-OriginRecord -Item $ssuHits[0].Item -Kind 'SSU'
+        $newSsuDependency = New-UpdateDependency -Origin $newSsuOrigin -Kind 'SSU'
+        $ssuDependency = [pscustomobject]@{
+            Key   = $newSsuDependency.Key
+            Value = $newSsuDependency.Value
+            KB    = $RequiredSsuKb
+        }
+        $ssuUpdated = $true
+        Write-Host "Using explicitly required SSU KB$RequiredSsuKb."
+    }
 }
 elseif ($baselineSsu) {
-    # This branch is defensive; the normal baseline case is handled above.
     $ssuDependency = $baselineSsu
 }
 else {
-    Write-Warning "No baseline SSU was found in '$BaselineManifestPath'. No SSU will be added automatically. Supply -RequiredSsuKb only if prerequisite analysis confirms one is required."
+    Write-Host 'No baseline SSU found and no replacement SSU was requested. Other update categories can still be updated.'
 }
 
 # Resolve only monthly LCU and .NET records. SSU selection is deliberately
@@ -548,10 +622,22 @@ foreach ($spec in $specs) {
     $resolved[$spec.Kind] = @($hits | Sort-Object Date,Title -Descending | Group-Object Title | ForEach-Object { $_.Group[0].Item })
 }
 
-foreach ($required in 'LCU','DOTNET') {
-    if (@($resolved[$required]).Count -eq 0) {
-        throw "No $required Security update found for $Profile in release month $Month. No manifest was written."
-    }
+# Update each category independently. If no category has a new package,
+# return successfully without touching the existing manifest.
+$lcuCount = @($resolved['LCU']).Count
+$dotnetCount = @($resolved['DOTNET']).Count
+
+if ($lcuCount -eq 0) {
+    Write-Host "No new LCU found for $Profile in $Month. Preserving baseline LCU."
+}
+if ($dotnetCount -eq 0) {
+    Write-Host "No new .NET 4.8 update found for $Profile in $Month. Preserving baseline .NET update."
+}
+
+if ($lcuCount -eq 0 -and $dotnetCount -eq 0 -and -not $ssuUpdated) {
+    Write-Host 'No new LCU, SSU or .NET updates found.'
+    Write-Host "SKIP: Existing manifest preserved: $([IO.Path]::GetFullPath($OutputPath))"
+    return
 }
 
 # The external schema's version folder is intentionally stable and derived from
@@ -564,26 +650,32 @@ $profileFolder = if ($Profile -eq 'windows10-21h2') {
     '11_24H2'
 }
 
-$lcuDates = @(
-    foreach ($item in @($resolved['LCU'])) {
-        $title = [string](Get-Prop $item @('Title','UpdateTitle'))
-        $date = Get-TitleDate -Title $title -Item $item
-
-        if ($date) {
-            $date
+if ($lcuCount -gt 0) {
+    $lcuDates = @(
+        foreach ($item in @($resolved['LCU'])) {
+            $title = [string](Get-Prop $item @('Title','UpdateTitle'))
+            $date = Get-TitleDate -Title $title -Item $item
+            if ($date) { $date }
         }
+    )
+
+    if ($lcuDates.Count -eq 0) {
+        throw "Could not determine the release date of the selected LCU for $Profile in $Month."
     }
-)
 
-if ($lcuDates.Count -eq 0) {
-    throw "Could not determine the release date of the selected LCU for $Profile in $Month."
+    $versionDate = (
+        $lcuDates |
+            Sort-Object -Descending |
+            Select-Object -First 1
+    ).ToString('yyyy-MM-dd')
 }
-
-$versionDate = (
-    $lcuDates |
-        Sort-Object -Descending |
-        Select-Object -First 1
-).ToString('yyyy-MM-dd')
+elseif ($baselineVersion -match '^\d+_\w+/(?<date>\d{4}-\d{2}-\d{2})$') {
+    # An SSU-only or .NET-only update must retain the previous LCU version date.
+    $versionDate = $Matches.date
+}
+else {
+    $versionDate = "$Month-01"
+}
 
 $deps = [ordered]@{}
 if ($AdkUrl) {
@@ -658,10 +750,11 @@ if ($null -ne $baselineManifest) {
 }
 
 # Explicit arguments take precedence over baseline values.
+$baselineIsoEntry = if ($null -ne $baselineIso) { $baselineIso.Value } else { $null }
 $effectiveImageUrl = $ImageUrl
 
 if ([string]::IsNullOrWhiteSpace($effectiveImageUrl)) {
-    $effectiveImageUrl = [string](Get-Prop $baselineIso.Value @('url'))
+    $effectiveImageUrl = [string](Get-Prop $baselineIsoEntry @('url'))
 }
 
 if ([string]::IsNullOrWhiteSpace($effectiveImageUrl)) {
@@ -671,7 +764,7 @@ if ([string]::IsNullOrWhiteSpace($effectiveImageUrl)) {
 $effectiveImageIndex = $ImageIndex
 
 if ($effectiveImageIndex -eq 0) {
-    $baselineIndex = Get-Prop $baselineIso.Value @('image_index')
+    $baselineIndex = Get-Prop $baselineIsoEntry @('image_index')
 
     if ($null -eq $baselineIndex) {
         throw "ImageIndex was not supplied and no image_index was found in the baseline ISO dependency."
@@ -707,10 +800,58 @@ $deps[$isoKey] = [ordered]@{
     url=$effectiveImageUrl
 	image_index=$effectiveImageIndex
 }
+# Begin with all baseline update dependencies, then replace only categories
+# for which this run found a new package.
 $updateDeps = [ordered]@{}
-if ($ssuDependency) {
-    $updateDeps[$ssuDependency.Key] = $ssuDependency.Value
+$baselineUpdates = $null
+if ($baselineManifest) {
+    $baselineUpdates = $baselineManifest.dependencies.deps.'win/updates'
 }
+if ($null -ne $baselineUpdates) {
+    foreach ($property in $baselineUpdates.PSObject.Properties) {
+        $updateDeps[$property.Name] = $property.Value
+    }
+}
+
+function Get-ManifestUpdateKind {
+    param([string]$Key, [object]$Entry)
+
+    $origin = Get-Prop $Entry @('origin')
+    $kind = [string](Get-Prop $origin @('kind'))
+    if ($kind -in @('SSU','LCU','DOTNET')) { return $kind }
+
+    $originDesc = [string](Get-Prop $origin @('desc'))
+    $entryDesc = [string](Get-Prop $Entry @('desc'))
+
+    if ($Key -match '(?i)^ssu[-_]' -or
+        $originDesc -match '(?i)Servicing Stack Update' -or
+        $entryDesc -match '(?i)update\s*-\s*SSU') {
+        return 'SSU'
+    }
+    if ($originDesc -match '(?i)\.NET Framework' -or
+        $entryDesc -match '(?i)\.NET') {
+        return 'DOTNET'
+    }
+    if ($originDesc -match '(?i)Cumulative Update.*Windows' -or
+        $entryDesc -match '(?i)CU for Windows') {
+        return 'LCU'
+    }
+    return $null
+}
+
+$replaceKinds = @()
+if ($lcuCount -gt 0) { $replaceKinds += 'LCU' }
+if ($dotnetCount -gt 0) { $replaceKinds += 'DOTNET' }
+if ($ssuUpdated) { $replaceKinds += 'SSU' }
+
+foreach ($key in @($updateDeps.Keys)) {
+    $kind = Get-ManifestUpdateKind -Key $key -Entry $updateDeps[$key]
+    if ($kind -in $replaceKinds) {
+        $updateDeps.Remove($key)
+        Write-Host "Replacing baseline $kind dependency: $key"
+    }
+}
+
 foreach ($kind in 'LCU','DOTNET') {
     foreach ($item in @($resolved[$kind])) {
         if ($null -eq $item) { continue }
@@ -719,6 +860,11 @@ foreach ($kind in 'LCU','DOTNET') {
         $updateDeps[$dep.Key] = $dep.Value
     }
 }
+
+if ($ssuUpdated -and $ssuDependency) {
+    $updateDeps[$ssuDependency.Key] = $ssuDependency.Value
+}
+
 $deps['win/updates'] = $updateDeps
 
 $manifest = [ordered]@{
